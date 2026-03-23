@@ -70,8 +70,7 @@ if [ -f "$ENV_FILE" ]; then
         cp backend/.env.example "$ENV_FILE"
         ok "backend/.env reset from .env.example"
     else
-        info "Keeping existing backend/.env — skipping env setup."
-        SKIP_ENV=true
+        ok "Keeping existing backend/.env"
     fi
 else
     cp backend/.env.example "$ENV_FILE"
@@ -82,65 +81,60 @@ echo ""
 
 # ── 3. Configure API keys ────────────────────────
 
-if [ "${SKIP_ENV:-false}" != "true" ]; then
-
-    echo -e "${BOLD}LLM API Keys${RESET}"
-    echo "   Sutra needs at least one LLM provider to run."
-    echo "   Press Enter to skip any provider you don't have."
-    echo ""
-
-    set_env() {
-        local key="$1" val="$2"
-        if [ -n "$val" ]; then
-            # Replace the line in .env (handles both empty and pre-filled values)
-            if grep -q "^${key}=" "$ENV_FILE"; then
-                # Use a temp file for cross-platform sed compatibility
-                local tmp
-                tmp="$(mktemp)"
-                sed "s|^${key}=.*|${key}=${val}|" "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
-            else
-                echo "${key}=${val}" >> "$ENV_FILE"
-            fi
+# Updates a key in .env whether it already exists or not
+set_env() {
+    local key="$1" val="$2"
+    if [ -n "$val" ]; then
+        if grep -q "^${key}=" "$ENV_FILE"; then
+            local tmp
+            tmp="$(mktemp)"
+            sed "s|^${key}=.*|${key}=${val}|" "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
+        else
+            echo "${key}=${val}" >> "$ENV_FILE"
         fi
-    }
-
-    read_key() {
-        local prompt="$1" var="$2"
-        read -rp "   $prompt: " value
-        set_env "$var" "$value"
-        [ -n "$value" ] && HAS_KEY=true
-    }
-
-    HAS_KEY=false
-    read_key "OpenAI API key      (sk-...)" "OPENAI_API_KEY"
-    read_key "Anthropic API key   (sk-ant-...)" "ANTHROPIC_API_KEY"
-    read_key "Google AI API key" "GOOGLE_API_KEY"
-    read_key "OpenRouter API key" "OPENROUTER_API_KEY"
-    read_key "Groq API key" "GROQ_API_KEY"
-
-    echo ""
-
-    if [ "$HAS_KEY" = false ]; then
-        warn "No LLM API key provided."
-        info "You can add keys to backend/.env later and run ./restart.sh"
-        info "Ollama (local models) works without an API key if configured."
-    else
-        ok "LLM key(s) saved to backend/.env"
     fi
+}
 
-    echo ""
+read_key() {
+    local prompt="$1" var="$2"
+    read -rp "   $prompt: " value
+    set_env "$var" "$value"
+    [ -n "$value" ] && HAS_KEY=true
+}
 
-    # ── 4. Generate SECRET_KEY ──────────────────────
+echo -e "${BOLD}LLM API Keys${RESET}"
+echo "   Sutra needs at least one LLM provider to run."
+echo "   Press Enter to skip any provider you don't have."
+echo ""
 
-    if command -v openssl &>/dev/null; then
-        SECRET=$(openssl rand -hex 32)
-        set_env "SECRET_KEY" "$SECRET"
-        ok "Generated a secure SECRET_KEY"
-    else
-        warn "openssl not found — keeping default SECRET_KEY. Change it before production use."
-    fi
+HAS_KEY=false
+read_key "OpenAI API key         (sk-...)" "OPENAI_API_KEY"
+read_key "Anthropic API key      (sk-ant-...)" "ANTHROPIC_API_KEY"
+read_key "Google Gemini API key" "GOOGLE_API_KEY"
+read_key "OpenRouter API key" "OPENROUTER_API_KEY"
+read_key "Groq API key" "GROQ_API_KEY"
 
-fi # end SKIP_ENV check
+echo ""
+
+if [ "$HAS_KEY" = false ]; then
+    warn "No LLM API key provided."
+    info "You can add keys to backend/.env later and run ./restart.sh"
+    info "Ollama (local models) works without an API key if configured."
+else
+    ok "LLM key(s) saved to backend/.env"
+fi
+
+echo ""
+
+# ── 4. Generate SECRET_KEY ──────────────────────
+
+if command -v openssl &>/dev/null; then
+    SECRET=$(openssl rand -hex 32)
+    set_env "SECRET_KEY" "$SECRET"
+    ok "Generated a secure SECRET_KEY"
+else
+    warn "openssl not found — keeping default SECRET_KEY. Change it before production use."
+fi
 
 echo ""
 
