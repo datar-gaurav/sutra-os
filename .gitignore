@@ -37,6 +37,10 @@ backend/.ssh/
 CLAUDE.md
 .claude/
 
+# Launch prep
+.prep.md
+docs/COMPARISONS.md
+
 # Build
 dist/
 build/

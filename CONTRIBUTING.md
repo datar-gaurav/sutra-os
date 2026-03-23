@@ -17,11 +17,13 @@ The fastest way to get a development environment running:
 
 ```bash
 git clone https://github.com/datar-gaurav/sutra-os.git
-cd sutra
-./start.sh --build
+cd sutra-os
+./install.sh
 ```
 
-This starts PostgreSQL, Redis, the backend API, frontend, and Celery worker.
+This checks prerequisites, configures your `.env`, prompts for API keys, and starts all services (PostgreSQL, Redis, Backend, Frontend, Celery).
+
+If you've already run the installer before, use `./start.sh --build` to rebuild and start.
 
 ### Local Development (without Docker)
 
