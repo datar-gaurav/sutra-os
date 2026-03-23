@@ -99,7 +99,7 @@ read_key() {
     local prompt="$1" var="$2"
     read -rp "   $prompt: " value
     set_env "$var" "$value"
-    [ -n "$value" ] && HAS_KEY=true
+    if [ -n "$value" ]; then HAS_KEY=true; fi
 }
 
 echo -e "${BOLD}LLM API Keys${RESET}"
