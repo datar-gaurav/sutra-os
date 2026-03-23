@@ -16,7 +16,7 @@ Thank you for your interest in contributing to Sutra! This guide will help you g
 The fastest way to get a development environment running:
 
 ```bash
-git clone https://github.com/datar-gaurav/sutra.git
+git clone https://github.com/datar-gaurav/sutra-os.git
 cd sutra
 ./start.sh --build
 ```
@@ -114,7 +114,7 @@ Write clear, concise commit messages:
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/datar-gaurav/sutra/issues) to report bugs or request features. Please include:
+Use [GitHub Issues](https://github.com/datar-gaurav/sutra-os/issues) to report bugs or request features. Please include:
 
 - **Bug reports:** Steps to reproduce, expected vs actual behavior, environment details
 - **Feature requests:** Use case, proposed solution, alternatives considered

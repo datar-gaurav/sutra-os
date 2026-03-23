@@ -34,7 +34,7 @@ This is the fastest way to get Sutra running. You need [Docker](https://docs.doc
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/datar-gaurav/sutra.git
+git clone https://github.com/datar-gaurav/sutra-os.git
 cd sutra
 
 # 2. Start all services (PostgreSQL, Redis, Backend, Frontend, Celery)
