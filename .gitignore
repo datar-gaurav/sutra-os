@@ -1,0 +1,47 @@
+# Credentials (NEVER commit)
+**/google_credentials.json
+**/credentials*.json
+**/*.pem
+**/*.key
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Next.js
+.next/
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+backend/.env
+backend/.ssh/
+
+# AI context
+CLAUDE.md
+.claude/
+
+# Build
+dist/
+build/
+
+# Root-level (not needed)
+/node_modules/
+/package.json
+/package-lock.json
