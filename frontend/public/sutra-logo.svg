@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <rect width="32" height="32" rx="7" fill="#1c1917"/>
+  <!-- Thread / knot mark: two interlocking arcs representing "sutra" (thread) -->
+  <path
+    d="M10 12 C10 8.5 14 7 16 9 C18 11 16 13.5 14 14.5 C12 15.5 10 17.5 10 20 C10 23 13.5 25 16 23.5"
+    stroke="white"
+    stroke-width="2.2"
+    stroke-linecap="round"
+    fill="none"
+  />
+  <path
+    d="M22 20 C22 23.5 18 25 16 23 C14 21 16 18.5 18 17.5 C20 16.5 22 14.5 22 12 C22 9 18.5 7 16 8.5"
+    stroke="white"
+    stroke-width="2.2"
+    stroke-linecap="round"
+    fill="none"
+  />
+</svg>
