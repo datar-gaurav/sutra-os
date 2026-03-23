@@ -28,20 +28,28 @@ Sutra is a full-stack platform for building and managing teams of AI agents. Eac
 
 ## Getting Started
 
-### Option 1: Docker Compose (Recommended)
+### Option 1: install.sh (Recommended for first-time setup)
 
-This is the fastest way to get Sutra running. You need [Docker](https://docs.docker.com/get-docker/) installed.
+The quickest way to go from a fresh clone to a running Sutra. You need [Docker](https://docs.docker.com/get-docker/) installed.
 
 ```bash
 # 1. Clone the repo
 git clone https://github.com/datar-gaurav/sutra-os.git
-cd sutra
+cd sutra-os
 
-# 2. Start all services (PostgreSQL, Redis, Backend, Frontend, Celery)
-./start.sh --build
+# 2. Run the setup script
+./install.sh
 ```
 
-That's it. The first build takes a few minutes. Once running:
+`install.sh` will:
+1. Check that Docker and Docker Compose are installed and running
+2. Create `backend/.env` from `.env.example`
+3. Prompt you for LLM API keys (OpenAI, Anthropic, Google Gemini, OpenRouter, Groq) — press Enter to skip any
+4. Generate a secure `SECRET_KEY`
+5. Build Docker images and start all services
+6. Wait for the backend to become healthy
+
+Once ready:
 
 | Service | URL |
 |---------|-----|
@@ -51,15 +59,24 @@ That's it. The first build takes a few minutes. Once running:
 
 The first user to register becomes the **owner**. Subsequent users get the **operator** role.
 
-**Useful commands:**
+**Useful commands after install:**
 
 ```bash
 ./stop.sh              # Stop all services
 ./restart.sh           # Restart all services
+./start.sh             # Start without rebuilding
 docker compose logs -f # Tail logs
 ```
 
-### Option 2: Local Development
+### Option 2: Docker Compose (manual)
+
+If you've already configured `backend/.env`, you can build and start directly:
+
+```bash
+./start.sh --build
+```
+
+### Option 3: Local Development
 
 For contributors who want to run services directly.
 
@@ -126,6 +143,7 @@ sutra/
 │   ├── components/          # Shared UI components
 │   └── lib/                 # Typed API client, WebSocket client
 ├── docker-compose.yml       # PostgreSQL, Redis, Backend, Frontend, Celery
+├── install.sh               # First-time setup: env, API keys, build, launch
 ├── start.sh / stop.sh       # Convenience scripts
 └── docs/                    # Architecture, deployment, and design docs
 ```
