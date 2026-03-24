@@ -18,6 +18,7 @@ from googleapiclient.discovery import build
 from langchain_core.tools import tool
 
 from app.config import settings
+from app.core.env_utils import get_config, get_secret
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -163,14 +164,19 @@ def create_email_tools(agent_id: str):
                 smtp_password = decrypt_secret(cfg.smtp_password)
 
         if cfg.provider == "GMAIL":
+            google_client_id = get_config("GOOGLE_CLIENT_ID", settings.google_client_id)
+            google_client_secret = await get_secret("GOOGLE_CLIENT_SECRET", settings.google_client_secret)
+            if not google_client_id or not google_client_secret:
+                return json.dumps({"error": "Google OAuth credentials are not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."})
+
             # --- Send via Gmail API ---
             def _send_gmail() -> str:
                 creds = Credentials(
                     None,  # No access token initially
                     refresh_token=refresh_token,
                     token_uri="https://oauth2.googleapis.com/token",
-                    client_id=settings.google_client_id,
-                    client_secret=settings.google_client_secret,
+                    client_id=google_client_id,
+                    client_secret=google_client_secret,
                 )
                 service = build('gmail', 'v1', credentials=creds)
                 
@@ -303,13 +309,18 @@ def create_email_tools(agent_id: str):
                 imap_password = decrypt_secret(cfg.imap_password) if cfg.imap_password else ""
 
         if cfg.provider == "GMAIL":
+            google_client_id = get_config("GOOGLE_CLIENT_ID", settings.google_client_id)
+            google_client_secret = await get_secret("GOOGLE_CLIENT_SECRET", settings.google_client_secret)
+            if not google_client_id or not google_client_secret:
+                return json.dumps({"error": "Google OAuth credentials are not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."})
+
             def _fetch_gmail() -> list[dict]:
                 creds = Credentials(
                     None,
                     refresh_token=refresh_token,
                     token_uri="https://oauth2.googleapis.com/token",
-                    client_id=settings.google_client_id,
-                    client_secret=settings.google_client_secret,
+                    client_id=google_client_id,
+                    client_secret=google_client_secret,
                 )
                 service = build('gmail', 'v1', credentials=creds)
                 
@@ -489,12 +500,17 @@ def create_email_tools(agent_id: str):
         if cc_addresses:
             msg.attach(MIMEText(body, "html" if is_html else "plain", "utf-8"))
 
+        google_client_id = get_config("GOOGLE_CLIENT_ID", settings.google_client_id)
+        google_client_secret = await get_secret("GOOGLE_CLIENT_SECRET", settings.google_client_secret)
+        if not google_client_id or not google_client_secret:
+            return json.dumps({"error": "Google OAuth credentials are not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."})
+
         def _create_gmail_draft() -> str:
             creds = Credentials(
                 None,
                 refresh_token=refresh_token,
-                client_id=settings.google_client_id,
-                client_secret=settings.google_client_secret,
+                client_id=google_client_id,
+                client_secret=google_client_secret,
                 token_uri="https://oauth2.googleapis.com/token",
             )
             service = build("gmail", "v1", credentials=creds)
