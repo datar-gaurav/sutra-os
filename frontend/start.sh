@@ -23,7 +23,7 @@ until curl -sf "${BACKEND_URL}/api/system/health" > /dev/null 2>&1; do
         break
     fi
     echo "  ⏳ Backend not ready yet... (${RETRY}/${MAX_RETRIES})"
-    sleep 3
+    sleep 1
 done
 
 if [ $RETRY -lt $MAX_RETRIES ]; then
