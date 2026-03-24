@@ -126,7 +126,7 @@ fi
 
 echo ""
 
-# ── 4. Generate SECRET_KEY ──────────────────────
+# ── 4. Generate SECRET_KEY + ENCRYPTION_KEY ─────
 
 if command -v openssl &>/dev/null; then
     SECRET=$(openssl rand -hex 32)
@@ -134,6 +134,18 @@ if command -v openssl &>/dev/null; then
     ok "Generated a secure SECRET_KEY"
 else
     warn "openssl not found — keeping default SECRET_KEY. Change it before production use."
+fi
+
+if command -v python3 &>/dev/null; then
+    ENC_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || true)
+    if [ -n "$ENC_KEY" ]; then
+        set_env "ENCRYPTION_KEY" "$ENC_KEY"
+        ok "Generated a secure ENCRYPTION_KEY"
+    else
+        warn "Could not generate ENCRYPTION_KEY — UI-saved secrets won't survive restarts until it is set."
+    fi
+else
+    warn "python3 not found — ENCRYPTION_KEY not generated. Set it manually in backend/.env."
 fi
 
 echo ""

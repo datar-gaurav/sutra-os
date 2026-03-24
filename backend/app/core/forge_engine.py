@@ -58,7 +58,8 @@ def make_branch_name(title: str, request_id: str) -> str:
 
 async def clone_repo(repo_url: str, workspace_path: Path) -> None:
     """Clone a GitHub repo into workspace_path using GITHUB_TOKEN (full clone)."""
-    token = settings.github_token
+    from app.core.env_utils import get_secret
+    token = await get_secret("GITHUB_TOKEN", settings.github_token or "")
     if not token:
         raise RuntimeError("GITHUB_TOKEN is not configured.")
 

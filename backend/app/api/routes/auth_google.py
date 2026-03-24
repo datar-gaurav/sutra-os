@@ -37,7 +37,10 @@ _CALENDAR_SCOPES = [
 @router.get("/login")
 async def google_login(request: Request, agent_id: str | None = None, service: str = "gmail"):
     """Redirect to Google consent screen for Gmail (service=gmail) or Drive (service=drive)."""
-    if not settings.google_client_id or not settings.google_client_secret:
+    from app.core.env_utils import get_config, get_secret
+    client_id = get_config("GOOGLE_CLIENT_ID", settings.google_client_id)
+    client_secret = await get_secret("GOOGLE_CLIENT_SECRET", settings.google_client_secret)
+    if not client_id or not client_secret:
         raise HTTPException(
             status_code=500,
             detail="Google OAuth credentials are not configured in the backend (.env)",
@@ -56,7 +59,7 @@ async def google_login(request: Request, agent_id: str | None = None, service: s
         scopes = _GMAIL_SCOPES
 
     params = {
-        "client_id": settings.google_client_id,
+        "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": " ".join(scopes),
@@ -85,13 +88,17 @@ async def google_callback(
         agent_id_part, service = state, "gmail"
     agent_id = agent_id_part or None
 
+    from app.core.env_utils import get_config, get_secret
+    client_id = get_config("GOOGLE_CLIENT_ID", settings.google_client_id)
+    client_secret = await get_secret("GOOGLE_CLIENT_SECRET", settings.google_client_secret)
+
     async with httpx.AsyncClient() as client:
         # 1. Exchange code for tokens
         token_resp = await client.post(
             "https://oauth2.googleapis.com/token",
             data={
-                "client_id": settings.google_client_id,
-                "client_secret": settings.google_client_secret,
+                "client_id": client_id,
+                "client_secret": client_secret,
                 "code": code,
                 "grant_type": "authorization_code",
                 "redirect_uri": redirect_uri,

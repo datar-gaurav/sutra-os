@@ -24,6 +24,21 @@ from app.core.orchestrator import orchestrator
 
 logger = logging.getLogger(__name__)
 
+
+async def get_telegram_bot_token() -> str:
+    """Return the Telegram bot token, preferring the DB vault over the .env setting."""
+    try:
+        from app.db.session import async_session_factory
+        from app.models.env_var import EnvVar
+        from app.core.vault import decrypt_secret
+        async with async_session_factory() as db:
+            row = await db.get(EnvVar, "TELEGRAM_BOT_TOKEN")
+            if row and row.value:
+                return decrypt_secret(row.value)
+    except Exception:
+        pass
+    return settings.telegram_bot_token
+
 def escape_markdown(text: str | Any) -> str:
     """Escape Telegram MarkdownV2 special characters.
     The following characters must be escaped: _ * [ ] ( ) ~ ` > # + - = | { } . !
@@ -574,7 +589,8 @@ async def _approve_forge_merge(forge_id: str, query, context: ContextTypes.DEFAU
         try:
             from github import Github
             from app.config import settings
-            gh = Github(settings.github_token)
+            from app.core.env_utils import get_secret
+            gh = Github(await get_secret("GITHUB_TOKEN", settings.github_token or ""))
             repo = gh.get_repo(req.repo_url)
             pr = repo.get_pull(req.pr_number)
             pr.merge(commit_message=f"Merge Sutra Forge PR: {req.title}")
@@ -718,7 +734,8 @@ async def _telegram_forge_code_and_pr(
 
             from github import Github
             from app.config import settings
-            gh = Github(settings.github_token)
+            from app.core.env_utils import get_secret
+            gh = Github(await get_secret("GITHUB_TOKEN", settings.github_token or ""))
             repo = gh.get_repo(req3.repo_url)
             pr = repo.create_pull(
                 title=f"feat: {req3.title}",
@@ -760,15 +777,16 @@ async def _telegram_forge_code_and_pr(
 
 async def start_telegram_bot():
     """Build and start the Telegram bot application."""
-    if not settings.telegram_bot_token:
+    token = await get_telegram_bot_token()
+    if not token:
         logger.warning("Telegram bot not configured. Set TELEGRAM_BOT_TOKEN.")
         return
 
     logger.info("📡 Starting Telegram bot...")
-    
+
     try:
         global _application
-        _application = ApplicationBuilder().token(settings.telegram_bot_token).build()
+        _application = ApplicationBuilder().token(token).build()
 
         # Forge conversation handler (collects feedback text after inline button press)
         forge_conv_handler = ConversationHandler(
@@ -811,8 +829,9 @@ async def start_telegram_bot():
 async def send_telegram_message(chat_id: str, text: str):
     """Send a message to a specific chat ID."""
     global _application
-    
-    if not settings.telegram_bot_token:
+
+    token = await get_telegram_bot_token()
+    if not token:
         logger.warning("Telegram bot token not configured. cannot send message.")
         return
 
@@ -824,7 +843,7 @@ async def send_telegram_message(chat_id: str, text: str):
         else:
             # Fallback to standalone bot instance
             from telegram import Bot
-            bot = Bot(token=settings.telegram_bot_token)
+            bot = Bot(token=token)
             async with bot:
                 await bot.send_message(chat_id=chat_id, text=safe_text, parse_mode="MarkdownV2")
         logger.info(f"📤 Sent Telegram message to {chat_id}")
