@@ -32,18 +32,19 @@ def create_telegram_tools():
         Args:
             message: The text content to send (plain text, no Markdown needed).
             chat_id: Telegram chat ID or username (e.g. '123456789' or '@mychannel').
-                     Leave empty to use the system-configured default chat ID
-                     (TELEGRAM_DEFAULT_CHAT_ID env var).
+                     If unknown, ask the user for it before calling this tool.
+                     Leave empty only if TELEGRAM_DEFAULT_CHAT_ID is already configured.
         """
-        if not settings.telegram_bot_token:
+        from app.integrations.telegram_bot import get_telegram_bot_token
+        token = await get_telegram_bot_token()
+        if not token:
             return "Error: Telegram bot is not configured (TELEGRAM_BOT_TOKEN not set)."
 
-        target_chat_id = chat_id.strip() or settings.telegram_default_chat_id.strip()
+        import os
+        default_chat_id = os.environ.get("TELEGRAM_DEFAULT_CHAT_ID", "") or settings.telegram_default_chat_id
+        target_chat_id = chat_id.strip() or default_chat_id.strip()
         if not target_chat_id:
-            return (
-                "Error: No chat_id provided and TELEGRAM_DEFAULT_CHAT_ID is not configured. "
-                "Pass a chat_id explicitly or set the env var."
-            )
+            return "Error: chat_id is required. Ask the user for their Telegram chat ID (a number like 123456789) and retry with it."
 
         try:
             from app.integrations.telegram_bot import send_telegram_message as _send

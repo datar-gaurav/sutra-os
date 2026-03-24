@@ -503,7 +503,8 @@ async def _run_coding(forge_id: str) -> None:
 
             from github import Github
             from app.config import settings
-            gh = Github(settings.github_token)
+            from app.core.env_utils import get_secret
+            gh = Github(await get_secret("GITHUB_TOKEN", settings.github_token or ""))
             repo = gh.get_repo(req4.repo_url)
 
             # Build PR body with test results

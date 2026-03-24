@@ -55,12 +55,15 @@ async def _get_gcal_credentials(agent_id: str):
     if not refresh_token:
         raise ValueError("Google OAuth refresh token missing. Please reconnect.")
 
+    from app.core.env_utils import get_config, get_secret
+    client_id = get_config("GOOGLE_CLIENT_ID", settings.google_client_id)
+    client_secret = await get_secret("GOOGLE_CLIENT_SECRET", settings.google_client_secret)
     creds = Credentials(
         token=None,
         refresh_token=refresh_token,
         token_uri="https://oauth2.googleapis.com/token",
-        client_id=settings.google_client_id,
-        client_secret=settings.google_client_secret,
+        client_id=client_id,
+        client_secret=client_secret,
     )
     creds.refresh(Request())
     return creds

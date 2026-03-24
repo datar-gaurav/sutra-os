@@ -13,7 +13,7 @@ from app.config import settings
 
 def _is_path_allowed(target_path: str) -> bool:
     """Check if the given absolute path is within the allowed directories."""
-    allowed_str = settings.allowed_agent_file_paths.strip()
+    allowed_str = (os.environ.get("ALLOWED_AGENT_FILE_PATHS") or settings.allowed_agent_file_paths).strip()
     if not allowed_str:
         return True  # If no whitelist is configured, allow all
         

@@ -63,9 +63,11 @@ class LLMRegistry:
         tags = [f"provider:{provider}", f"model:{model}"]
 
         if provider == "ollama":
+            import os as _os
+            ollama_url = _os.environ.get("OLLAMA_BASE_URL") or settings.ollama_base_url
             return ChatOllama(
                 model=model,
-                base_url=settings.ollama_base_url,
+                base_url=ollama_url,
                 temperature=temperature,
                 num_predict=max_tokens,
                 keep_alive="1m",
@@ -150,9 +152,14 @@ class LLMRegistry:
             raise ValueError(f"Unknown LLM provider: {provider}")
 
     def _get_api_key(self, provider: str, fallback: str = "") -> str:
-        """Get API key from registered providers or fallback to env."""
+        """Get API key from registered providers, os.environ, or settings fallback."""
+        import os as _os
         config = self._providers.get(provider, {})
-        key = config.get("api_key", "") or fallback
+        # 1. Registry (populated from LLMProvider DB table at startup)
+        # 2. Live os.environ (catches runtime env changes for non-vault keys)
+        # 3. settings fallback (from .env at startup)
+        env_key = f"{provider.upper()}_API_KEY"
+        key = config.get("api_key", "") or _os.environ.get(env_key, "") or fallback
         if not key:
             raise ValueError(
                 f"No API key configured for provider '{provider}'. "
@@ -162,9 +169,11 @@ class LLMRegistry:
 
     async def discover_ollama_models(self) -> list[dict]:
         """Query the local Ollama instance for available models."""
+        import os as _os
+        ollama_url = _os.environ.get("OLLAMA_BASE_URL") or settings.ollama_base_url
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{settings.ollama_base_url}/api/tags")
+                response = await client.get(f"{ollama_url}/api/tags")
                 response.raise_for_status()
                 data = response.json()
                 models = []
@@ -182,9 +191,11 @@ class LLMRegistry:
 
     async def check_ollama_connection(self) -> bool:
         """Check if Ollama is reachable."""
+        import os as _os
+        ollama_url = _os.environ.get("OLLAMA_BASE_URL") or settings.ollama_base_url
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{settings.ollama_base_url}/api/tags")
+                response = await client.get(f"{ollama_url}/api/tags")
                 return response.status_code == 200
         except Exception:
             return False
@@ -200,7 +211,8 @@ class LLMRegistry:
 
     async def fetch_openrouter_models(self) -> list[dict]:
         """Fetch available models from the OpenRouter API."""
-        api_key = self._providers.get("openrouter", {}).get("api_key", "") or settings.openrouter_api_key
+        import os as _os
+        api_key = self._providers.get("openrouter", {}).get("api_key", "") or _os.environ.get("OPENROUTER_API_KEY", "") or settings.openrouter_api_key
         if not api_key:
             logger.warning("No OpenRouter API key configured — cannot fetch model list.")
             return []
@@ -231,7 +243,8 @@ class LLMRegistry:
 
     async def fetch_gemini_models(self) -> list[dict]:
         """Fetch available models from the Google Gemini API."""
-        api_key = self._providers.get("google", {}).get("api_key", "") or settings.google_api_key
+        import os as _os
+        api_key = self._providers.get("google", {}).get("api_key", "") or _os.environ.get("GOOGLE_API_KEY", "") or settings.google_api_key
         if not api_key:
             logger.warning("No Google API key configured — cannot fetch model list.")
             return []
@@ -266,7 +279,8 @@ class LLMRegistry:
 
     async def fetch_openrouter_quota(self) -> dict:
         """Fetch remaining quota/credits from the OpenRouter API."""
-        api_key = self._providers.get("openrouter", {}).get("api_key", "") or settings.openrouter_api_key
+        import os as _os
+        api_key = self._providers.get("openrouter", {}).get("api_key", "") or _os.environ.get("OPENROUTER_API_KEY", "") or settings.openrouter_api_key
         if not api_key:
             return {"error": "No OpenRouter API key configured"}
         try:
@@ -318,7 +332,8 @@ class LLMRegistry:
 
     async def fetch_clod_models(self) -> list[dict]:
         """Fetch available models from the Clod.io API."""
-        api_key = self._providers.get("clod", {}).get("api_key", "") or settings.clod_api_key
+        import os as _os
+        api_key = self._providers.get("clod", {}).get("api_key", "") or _os.environ.get("CLOD_API_KEY", "") or settings.clod_api_key
         if not api_key:
             logger.warning("No Clod.io API key configured — cannot fetch model list.")
             return []
@@ -346,7 +361,8 @@ class LLMRegistry:
 
     async def fetch_groq_models(self) -> list[dict]:
         """Fetch available models from the Groq API."""
-        api_key = self._providers.get("groq", {}).get("api_key", "") or settings.groq_api_key
+        import os as _os
+        api_key = self._providers.get("groq", {}).get("api_key", "") or _os.environ.get("GROQ_API_KEY", "") or settings.groq_api_key
         if not api_key:
             logger.warning("No Groq API key configured — cannot fetch model list.")
             return []
