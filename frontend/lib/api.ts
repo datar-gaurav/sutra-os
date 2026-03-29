@@ -348,6 +348,7 @@ export const systemApi = {
     health: () =>
         apiFetch<{ status: string; version: string; ollama_connected: boolean }>("/api/system/health"),
     status: () => apiFetch<any>("/api/system/status"),
+    restart: () => apiFetch<{ status: string }>("/api/system/restart", { method: "POST" }),
 };
 
 // ─── Monitor ────────────────────────────────────────────────────────────────

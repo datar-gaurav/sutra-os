@@ -12,6 +12,7 @@ import {
     Server,
     CheckCircle2,
     XCircle,
+    RotateCw,
 } from "lucide-react";
 import { agentsApi, systemApi, type Agent } from "@/lib/api";
 import AgentAvatar from "@/components/AgentAvatar";
@@ -20,6 +21,7 @@ export default function DashboardPage() {
     const [agents, setAgents] = useState<Agent[]>([]);
     const [health, setHealth] = useState<any>(null);
     const [loading, setLoading] = useState(true);
+    const [restarting, setRestarting] = useState(false);
 
     useEffect(() => {
         async function load() {
@@ -38,6 +40,29 @@ export default function DashboardPage() {
         }
         load();
     }, []);
+
+    const handleRestart = async () => {
+        if (!confirm("Restart the backend? All running agents will be stopped.")) return;
+        setRestarting(true);
+        try {
+            await systemApi.restart();
+        } catch {
+            // Expected — the backend shuts down before responding
+        }
+        // Poll until backend is back
+        const poll = setInterval(async () => {
+            try {
+                const h = await systemApi.health();
+                if (h) {
+                    clearInterval(poll);
+                    setHealth(h);
+                    setRestarting(false);
+                }
+            } catch {
+                // Still restarting
+            }
+        }, 2000);
+    };
 
     const runningAgents = agents.filter((a) => a.status === "running");
     const totalAgents = agents.length;
@@ -112,26 +137,37 @@ export default function DashboardPage() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* System Status */}
                 <div className="glass-card p-5">
-                    <h2 className="text-base font-semibold text-stone-900 dark:text-white mb-4 flex items-center gap-2">
-                        <Server className="w-4 h-4 text-stone-600" />
-                        System Status
-                    </h2>
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-base font-semibold text-stone-900 dark:text-white flex items-center gap-2">
+                            <Server className="w-4 h-4 text-stone-600" />
+                            System Status
+                        </h2>
+                        <button
+                            onClick={handleRestart}
+                            disabled={restarting}
+                            className="text-xs text-stone-500 hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200 flex items-center gap-1 transition-colors disabled:opacity-50"
+                            title="Restart backend"
+                        >
+                            <RotateCw className={`w-3.5 h-3.5 ${restarting ? "animate-spin" : ""}`} />
+                            {restarting ? "Restarting..." : "Restart"}
+                        </button>
+                    </div>
                     <div className="space-y-2.5">
                         <StatusRow
                             label="Backend API"
-                            connected={!!health}
+                            connected={!restarting && !!health}
                         />
                         <StatusRow
                             label="Ollama"
-                            connected={health?.ollama_connected ?? false}
+                            connected={!restarting && (health?.ollama_connected ?? false)}
                         />
                         <StatusRow
                             label="Database"
-                            connected={health?.db_connected ?? false}
+                            connected={!restarting && (health?.db_connected ?? false)}
                         />
                         <StatusRow
                             label="Redis"
-                            connected={health?.redis_connected ?? false}
+                            connected={!restarting && (health?.redis_connected ?? false)}
                         />
                     </div>
                 </div>

@@ -1,5 +1,10 @@
 """System health and status routes."""
 
+import logging
+import os
+import pathlib
+import time
+
 from fastapi import APIRouter
 
 from app.api.schemas import HealthResponse
@@ -8,6 +13,7 @@ from app.core.agent_manager import agent_manager
 from app.core.llm_registry import llm_registry
 
 router = APIRouter(prefix="/system", tags=["system"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -40,3 +46,17 @@ async def system_status():
         "ollama_connected": ollama_connected,
         "ollama_url": settings.ollama_base_url,
     }
+
+
+@router.post("/restart")
+async def restart_backend():
+    """Restart the backend by triggering uvicorn's --reload watcher.
+
+    Touches a Python file so uvicorn detects a change and restarts the
+    application. This works both in Docker (with --reload) and locally.
+    """
+    logger.info("Restart requested via API — triggering uvicorn reload")
+    # Touch a .py file to trigger uvicorn's file-watcher reload
+    trigger = pathlib.Path(__file__).resolve()
+    trigger.write_bytes(trigger.read_bytes())
+    return {"status": "restarting"}

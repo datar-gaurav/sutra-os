@@ -2,7 +2,7 @@
 
 import json
 import logging
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -47,9 +47,18 @@ async def google_login(request: Request, agent_id: str | None = None, service: s
         )
 
     redirect_uri = str(request.base_url).rstrip("/") + "/api/auth/google/callback"
-    # Encode both agent_id and service into state so the callback can route correctly.
-    # Format: "<agent_id>:<service>"  — agent_id may be empty string.
-    state = f"{agent_id or ''}:{service}"
+    # Capture the frontend origin from the Referer header so the callback can redirect back
+    # to the correct host/port (e.g. localhost:3001 vs localhost:3000).
+    referer = request.headers.get("referer", "")
+    if referer:
+        parsed = urlparse(referer)
+        frontend_origin = f"{parsed.scheme}://{parsed.netloc}"
+    else:
+        frontend_origin = settings.cors_origins_list[0] if settings.cors_origins_list else "http://localhost:3000"
+
+    # Encode agent_id, service, and frontend origin into state so the callback can route correctly.
+    # Format: "<agent_id>:<service>:<frontend_origin>"  — agent_id may be empty string.
+    state = f"{agent_id or ''}:{service}:{frontend_origin}"
 
     if service == "drive":
         scopes = _DRIVE_SCOPES
@@ -81,11 +90,15 @@ async def google_callback(
     """Exchange auth code for tokens and persist to the correct integration."""
     redirect_uri = str(request.base_url).rstrip("/") + "/api/auth/google/callback"
 
-    # Parse state — new format: "<agent_id>:<service>"; old format: "<agent_id>" (Gmail only)
-    if ":" in state:
-        agent_id_part, service = state.rsplit(":", 1)
+    # Parse state — format: "<agent_id>:<service>:<frontend_origin>"
+    # Also supports legacy formats: "<agent_id>:<service>" and "<agent_id>"
+    parts = state.split(":", 2) if state else []
+    if len(parts) >= 3:
+        agent_id_part, service, frontend_origin = parts[0], parts[1], parts[2]
+    elif len(parts) == 2:
+        agent_id_part, service, frontend_origin = parts[0], parts[1], ""
     else:
-        agent_id_part, service = state, "gmail"
+        agent_id_part, service, frontend_origin = state, "gmail", ""
     agent_id = agent_id_part or None
 
     from app.core.env_utils import get_config, get_secret
@@ -126,14 +139,14 @@ async def google_callback(
     if not email_address:
         raise HTTPException(status_code=400, detail="Could not retrieve email from Google")
 
-    frontend_url = settings.cors_origins_list[0] if settings.cors_origins_list else "http://localhost:3000"
+    frontend_url = frontend_origin or (settings.cors_origins_list[0] if settings.cors_origins_list else "http://localhost:3000")
 
     if service == "drive":
         await _save_drive_integration(db, agent_id, email_address, refresh_token)
         return RedirectResponse(f"{frontend_url}/google-drive")
     elif service == "calendar":
         await _save_calendar_integration(db, agent_id, email_address, refresh_token)
-        return RedirectResponse(f"{frontend_url}/google-calendar")
+        return RedirectResponse(f"{frontend_url}/integrations")
     else:
         await _save_gmail_config(db, agent_id, email_address, refresh_token)
         return RedirectResponse(f"{frontend_url}/email")
