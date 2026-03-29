@@ -143,16 +143,17 @@ fi
 
 EXISTING_ENC_KEY=$(grep "^ENCRYPTION_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
 if [ -z "$EXISTING_ENC_KEY" ]; then
-    if command -v python3 &>/dev/null; then
-        ENC_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || true)
-        if [ -n "$ENC_KEY" ]; then
-            set_env "ENCRYPTION_KEY" "$ENC_KEY"
-            ok "Generated a secure ENCRYPTION_KEY"
-        else
-            warn "Could not generate ENCRYPTION_KEY — UI-saved secrets won't survive restarts until it is set."
-        fi
+    # Try python3 first (needs cryptography), then fall back to openssl
+    ENC_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || true)
+    if [ -z "$ENC_KEY" ] && command -v openssl &>/dev/null; then
+        # Fernet key = url-safe base64 of 32 random bytes
+        ENC_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+    fi
+    if [ -n "$ENC_KEY" ]; then
+        set_env "ENCRYPTION_KEY" "$ENC_KEY"
+        ok "Generated a secure ENCRYPTION_KEY"
     else
-        warn "python3 not found — ENCRYPTION_KEY not generated. Set it manually in backend/.env."
+        warn "Could not generate ENCRYPTION_KEY — UI-saved secrets won't survive restarts until it is set."
     fi
 else
     ok "ENCRYPTION_KEY already set — keeping existing value (preserves encrypted secrets)"
