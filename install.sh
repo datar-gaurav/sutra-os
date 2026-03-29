@@ -128,24 +128,34 @@ echo ""
 
 # ── 4. Generate SECRET_KEY + ENCRYPTION_KEY ─────
 
-if command -v openssl &>/dev/null; then
-    SECRET=$(openssl rand -hex 32)
-    set_env "SECRET_KEY" "$SECRET"
-    ok "Generated a secure SECRET_KEY"
-else
-    warn "openssl not found — keeping default SECRET_KEY. Change it before production use."
-fi
-
-if command -v python3 &>/dev/null; then
-    ENC_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || true)
-    if [ -n "$ENC_KEY" ]; then
-        set_env "ENCRYPTION_KEY" "$ENC_KEY"
-        ok "Generated a secure ENCRYPTION_KEY"
+EXISTING_SECRET=$(grep "^SECRET_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+if [ -z "$EXISTING_SECRET" ]; then
+    if command -v openssl &>/dev/null; then
+        SECRET=$(openssl rand -hex 32)
+        set_env "SECRET_KEY" "$SECRET"
+        ok "Generated a secure SECRET_KEY"
     else
-        warn "Could not generate ENCRYPTION_KEY — UI-saved secrets won't survive restarts until it is set."
+        warn "openssl not found — keeping default SECRET_KEY. Change it before production use."
     fi
 else
-    warn "python3 not found — ENCRYPTION_KEY not generated. Set it manually in backend/.env."
+    ok "SECRET_KEY already set — keeping existing value"
+fi
+
+EXISTING_ENC_KEY=$(grep "^ENCRYPTION_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+if [ -z "$EXISTING_ENC_KEY" ]; then
+    if command -v python3 &>/dev/null; then
+        ENC_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || true)
+        if [ -n "$ENC_KEY" ]; then
+            set_env "ENCRYPTION_KEY" "$ENC_KEY"
+            ok "Generated a secure ENCRYPTION_KEY"
+        else
+            warn "Could not generate ENCRYPTION_KEY — UI-saved secrets won't survive restarts until it is set."
+        fi
+    else
+        warn "python3 not found — ENCRYPTION_KEY not generated. Set it manually in backend/.env."
+    fi
+else
+    ok "ENCRYPTION_KEY already set — keeping existing value (preserves encrypted secrets)"
 fi
 
 echo ""
