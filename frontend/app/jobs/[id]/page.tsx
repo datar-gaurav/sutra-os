@@ -63,6 +63,8 @@ export default function EditJobPage() {
     const [selectedDays, setSelectedDays] = useState<string[]>([]);
     const [hour, setHour] = useState("9");
     const [minute, setMinute] = useState("00");
+    const [useCustomCron, setUseCustomCron] = useState(false);
+    const [customCron, setCustomCron] = useState("");
 
     // Notifications
     const [notifyEnabled, setNotifyEnabled] = useState(false);
@@ -100,11 +102,24 @@ export default function EditJobPage() {
                     setN8nWebhookUrl(jobRes.n8n_webhook_url || "");
                 }
 
-                // Parse schedule
-                const { days, hour, minute } = parseCron(jobRes.cron_expression);
-                setSelectedDays(days);
-                setHour(hour);
-                setMinute(minute);
+                // Parse schedule — if the cron uses features the visual picker can't
+                // represent (e.g. */5 ranges, month fields), default to custom mode.
+                const cronParts = (jobRes.cron_expression || "").split(" ");
+                const isSimpleCron =
+                    cronParts.length === 5 &&
+                    /^\d+$/.test(cronParts[0]) &&
+                    /^\d+$/.test(cronParts[1]) &&
+                    cronParts[2] === "*" &&
+                    cronParts[3] === "*";
+                if (isSimpleCron) {
+                    const { days, hour, minute } = parseCron(jobRes.cron_expression);
+                    setSelectedDays(days);
+                    setHour(hour);
+                    setMinute(minute);
+                } else {
+                    setUseCustomCron(true);
+                    setCustomCron(jobRes.cron_expression || "");
+                }
 
                 // Notifications
                 if (jobRes.notify_email) {
@@ -141,9 +156,14 @@ export default function EditJobPage() {
         e.preventDefault();
 
         if (!name.trim()) { alert("Please enter a job name."); return; }
-        if (selectedDays.length === 0) { alert("Please select at least one day."); return; }
+        if (useCustomCron) {
+            const parts = customCron.trim().split(/\s+/);
+            if (parts.length !== 5) { alert("Cron expression must have exactly 5 fields (minute hour day month weekday)."); return; }
+        } else if (selectedDays.length === 0) {
+            alert("Please select at least one day."); return;
+        }
 
-        const cron = buildCron(selectedDays, hour, minute);
+        const cron = useCustomCron ? customCron.trim() : buildCron(selectedDays, hour, minute);
 
         const payload: Record<string, unknown> = {
             name,
@@ -318,63 +338,99 @@ export default function EditJobPage() {
 
                 {/* Schedule */}
                 <div className="bg-white border border-stone-200 shadow-sm rounded-xl p-6 space-y-4">
-                    <h2 className="text-xs font-bold text-stone-500 uppercase tracking-widest">Schedule (Pacific Time)</h2>
+                    <div className="flex items-center justify-between">
+                        <h2 className="text-xs font-bold text-stone-500 uppercase tracking-widest">Schedule (Pacific Time)</h2>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (!useCustomCron) {
+                                    setCustomCron(buildCron(selectedDays.length ? selectedDays : ["1"], hour, minute));
+                                }
+                                setUseCustomCron(!useCustomCron);
+                            }}
+                            className="text-xs text-violet-600 hover:underline"
+                        >
+                            {useCustomCron ? "Use visual picker" : "Edit cron expression"}
+                        </button>
+                    </div>
 
-                    <div>
-                        <div className="flex items-center justify-between mb-2">
-                            <label className="text-sm font-medium text-stone-700">Days of Week</label>
-                            <div className="flex gap-2 text-xs">
-                                <button type="button" onClick={selectAll} className="text-violet-600 hover:underline">All</button>
-                                <button type="button" onClick={selectWeekdays} className="text-violet-600 hover:underline">Weekdays</button>
-                                <button type="button" onClick={selectWeekend} className="text-violet-600 hover:underline">Weekend</button>
+                    {useCustomCron ? (
+                        <div className="space-y-3">
+                            <div>
+                                <label className="block text-sm font-medium text-stone-700 mb-1.5">Cron Expression *</label>
+                                <input
+                                    type="text"
+                                    value={customCron}
+                                    onChange={(e) => setCustomCron(e.target.value)}
+                                    placeholder="*/5 * * * *"
+                                    className="w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-stone-900 font-mono placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-violet-500/10 focus:border-violet-500 transition-all"
+                                    required
+                                />
+                            </div>
+                            <div className="flex items-center gap-2 bg-stone-50 border border-stone-100 rounded-lg px-3 py-2">
+                                <Info size={13} className="text-stone-400 flex-shrink-0" />
+                                <span className="text-xs text-stone-500">Format: minute hour day-of-month month day-of-week</span>
                             </div>
                         </div>
-                        <div className="flex gap-2">
-                            {DAYS_OF_WEEK.map((day) => (
-                                <button
-                                    key={day.value}
-                                    type="button"
-                                    onClick={() => toggleDay(day.value)}
-                                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all border ${selectedDays.includes(day.value)
-                                        ? "bg-violet-600 border-violet-600 text-white shadow-md shadow-violet-100"
-                                        : "bg-stone-50 border-stone-200 text-stone-500 hover:bg-stone-100"
-                                        }`}
-                                >
-                                    {day.label}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
+                    ) : (
+                        <>
+                            <div>
+                                <div className="flex items-center justify-between mb-2">
+                                    <label className="text-sm font-medium text-stone-700">Days of Week</label>
+                                    <div className="flex gap-2 text-xs">
+                                        <button type="button" onClick={selectAll} className="text-violet-600 hover:underline">All</button>
+                                        <button type="button" onClick={selectWeekdays} className="text-violet-600 hover:underline">Weekdays</button>
+                                        <button type="button" onClick={selectWeekend} className="text-violet-600 hover:underline">Weekend</button>
+                                    </div>
+                                </div>
+                                <div className="flex gap-2">
+                                    {DAYS_OF_WEEK.map((day) => (
+                                        <button
+                                            key={day.value}
+                                            type="button"
+                                            onClick={() => toggleDay(day.value)}
+                                            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all border ${selectedDays.includes(day.value)
+                                                ? "bg-violet-600 border-violet-600 text-white shadow-md shadow-violet-100"
+                                                : "bg-stone-50 border-stone-200 text-stone-500 hover:bg-stone-100"
+                                                }`}
+                                        >
+                                            {day.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
 
-                    <div>
-                        <label className="block text-sm font-medium text-stone-700 mb-2">Time</label>
-                        <div className="flex gap-3">
-                            <select
-                                value={hour}
-                                onChange={(e) => setHour(e.target.value)}
-                                className="flex-1 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-stone-900 focus:outline-none focus:ring-2 focus:ring-violet-500/10 focus:border-violet-500 transition-all"
-                            >
-                                {HOURS.map((h) => (
-                                    <option key={h.value} value={h.value}>{h.label}</option>
-                                ))}
-                            </select>
-                            <select
-                                value={minute}
-                                onChange={(e) => setMinute(e.target.value)}
-                                className="w-28 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-stone-900 focus:outline-none focus:ring-2 focus:ring-violet-500/10 focus:border-violet-500 transition-all"
-                            >
-                                {MINUTES.map((m) => (
-                                    <option key={m.value} value={m.value}>{m.label}</option>
-                                ))}
-                            </select>
-                        </div>
-                    </div>
+                            <div>
+                                <label className="block text-sm font-medium text-stone-700 mb-2">Time</label>
+                                <div className="flex gap-3">
+                                    <select
+                                        value={hour}
+                                        onChange={(e) => setHour(e.target.value)}
+                                        className="flex-1 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-stone-900 focus:outline-none focus:ring-2 focus:ring-violet-500/10 focus:border-violet-500 transition-all"
+                                    >
+                                        {HOURS.map((h) => (
+                                            <option key={h.value} value={h.value}>{h.label}</option>
+                                        ))}
+                                    </select>
+                                    <select
+                                        value={minute}
+                                        onChange={(e) => setMinute(e.target.value)}
+                                        className="w-28 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-stone-900 focus:outline-none focus:ring-2 focus:ring-violet-500/10 focus:border-violet-500 transition-all"
+                                    >
+                                        {MINUTES.map((m) => (
+                                            <option key={m.value} value={m.value}>{m.label}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
 
-                    <div className="flex items-center gap-2 bg-stone-50 border border-stone-100 rounded-lg px-3 py-2">
-                        <Info size={13} className="text-stone-400 flex-shrink-0" />
-                        <span className="text-xs text-stone-500">Cron expression:&nbsp;</span>
-                        <code className="text-xs text-violet-600 font-mono font-bold">{cronPreview}</code>
-                    </div>
+                            <div className="flex items-center gap-2 bg-stone-50 border border-stone-100 rounded-lg px-3 py-2">
+                                <Info size={13} className="text-stone-400 flex-shrink-0" />
+                                <span className="text-xs text-stone-500">Cron expression:&nbsp;</span>
+                                <code className="text-xs text-violet-600 font-mono font-bold">{cronPreview}</code>
+                            </div>
+                        </>
+                    )}
                 </div>
 
                 {/* Notifications */}
