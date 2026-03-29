@@ -132,17 +132,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Index creation skipped: {e}")
 
-    # Restore non-secret env vars from DB into os.environ (lost across restarts)
+    # Restore env vars from DB into os.environ (lost across restarts)
     try:
         import os as _os
+        from app.core.vault import decrypt_secret
         from app.db.session import async_session_factory
         from app.models.env_var import EnvVar
         from sqlalchemy import select as sa_select
         async with async_session_factory() as db:
-            result = await db.execute(sa_select(EnvVar).where(EnvVar.is_secret == False))  # noqa: E712
+            result = await db.execute(sa_select(EnvVar))
             for row in result.scalars().all():
-                _os.environ.setdefault(row.key, row.value)
-        logger.info("✅ Non-secret env vars restored from DB.")
+                if row.is_secret:
+                    try:
+                        _os.environ.setdefault(row.key, decrypt_secret(row.value))
+                    except Exception:
+                        pass
+                else:
+                    _os.environ.setdefault(row.key, row.value)
+        logger.info("✅ Env vars restored from DB.")
     except Exception as e:
         logger.warning(f"Non-secret env var restore skipped: {e}")
 

@@ -373,12 +373,10 @@ async def upsert_env_vars(
         else:
             db.add(EnvVar(key=key, value=stored_value, is_secret=is_secret))
 
-        # Also update the live process environment for non-secret values so
-        # config.py picks them up on the next request (secrets already stored
-        # in vault — config.py reads from DB via llm_registry etc.)
-        if not is_secret:
-            import os
-            os.environ[key] = item.value
+        # Also update the live process environment so config.py and llm_registry
+        # pick up the value on the next request without requiring a restart.
+        import os
+        os.environ[key] = item.value
 
     await db.commit()
 
