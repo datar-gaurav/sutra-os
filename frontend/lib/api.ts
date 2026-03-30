@@ -1830,6 +1830,9 @@ export interface IntegrationType {
     config_fields: IntegrationCredentialField[];
     tool_ids: string[];
     oauth?: boolean;
+    is_extension?: boolean;
+    version?: string;
+    author?: string;
 }
 
 export interface Integration {
@@ -1868,6 +1871,13 @@ export const integrationsApi = {
     }>) => apiFetch<Integration>(`/api/integrations/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     delete: (id: string) => apiFetch<void>(`/api/integrations/${id}`, { method: "DELETE" }),
     test: (id: string) => apiFetch<{ ok: boolean; detail: string }>(`/api/integrations/${id}/test`, { method: "POST" }),
+};
+
+export const extensionsApi = {
+    refresh: () => apiFetch<{ ok: boolean; extensions_loaded: number; loaded: string[]; errors: Record<string, string[]> }>(
+        "/api/integrations/extensions/refresh",
+        { method: "POST" },
+    ),
 };
 
 // ─── Forge ───────────────────────────────────────────────────────────────────

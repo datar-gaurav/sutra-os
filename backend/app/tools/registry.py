@@ -41,6 +41,15 @@ from app.tools.scheduling_tools import SCHEDULING_TOOL_IDS, create_scheduling_to
 from app.tools.evolve_tools import EVOLVE_TOOL_IDS, create_evolve_tools
 from app.tools.google_calendar_tools import GCAL_TOOL_IDS, create_google_calendar_tools
 from app.tools.workflow_tools import WORKFLOW_TOOL_IDS, create_workflow_tools
+from app.tools.extensions import (
+    discover_extensions,
+    get_all_extension_tool_ids,
+    get_extension_registry,
+    get_extension_tool_catalog,
+)
+
+# Auto-discover extensions at startup
+discover_extensions()
 
 # Tool metadata for the UI
 TOOL_CATALOG: list[dict] = [
@@ -887,6 +896,15 @@ def get_tools_by_ids(tool_ids: list[str], agent_id: str | None = None) -> list[B
             if tid in EVOLVE_TOOL_IDS and tid in evolve_tools_map:
                 tools.append(evolve_tools_map[tid])
 
+    # ── Extension tools ────────────────────────────────────────────────────────
+    for _ext_id, _ext_info in get_extension_registry().items():
+        _needs_ext = any(tid in _ext_info.tool_ids for tid in tool_ids)
+        if _needs_ext and agent_id:
+            _ext_tools_map = {t.name: t for t in _ext_info.create_tools(agent_id)}
+            for tid in tool_ids:
+                if tid in _ext_info.tool_ids and tid in _ext_tools_map:
+                    tools.append(_ext_tools_map[tid])
+
     _ALL_FACTORY_IDS = (
         MEMORY_TOOL_IDS | TASK_TOOL_IDS | DISCUSSION_TOOL_IDS | APPROVAL_TOOL_IDS
         | RAG_TOOL_IDS | FACTORY_TOOL_IDS | EMAIL_TOOL_IDS | WEBHOOK_TOOL_IDS
@@ -894,6 +912,7 @@ def get_tools_by_ids(tool_ids: list[str], agent_id: str | None = None) -> list[B
         | GITLAB_TOOL_IDS | GITHUB_INTEGRATION_TOOL_IDS
         | GOAL_TOOL_IDS | TELEGRAM_TOOL_IDS | FORGE_TOOL_IDS | GOOGLE_DRIVE_TOOL_IDS
         | GCAL_TOOL_IDS | WORKFLOW_TOOL_IDS | SCHEDULING_TOOL_IDS | EVOLVE_TOOL_IDS
+        | get_all_extension_tool_ids()
     )
 
     for tid in tool_ids:
@@ -915,4 +934,4 @@ def get_all_tools() -> list[BaseTool]:
 
 def get_tool_catalog() -> list[dict]:
     """Get the full tool catalog with metadata for the UI."""
-    return TOOL_CATALOG + mcp_manager.get_all_mcp_tools_metadata()
+    return TOOL_CATALOG + mcp_manager.get_all_mcp_tools_metadata() + get_extension_tool_catalog()

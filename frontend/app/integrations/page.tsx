@@ -3,9 +3,9 @@
 import { useState, useEffect, useCallback } from "react";
 import {
     Plus, Trash2, CheckCircle, AlertCircle, Loader2, X, Eye, EyeOff,
-    RefreshCw, Settings, Link2, Unlink, Search,
+    RefreshCw, Settings, Link2, Unlink, Search, Puzzle,
 } from "lucide-react";
-import { integrationsApi, Integration, IntegrationType, API_BASE } from "@/lib/api";
+import { integrationsApi, extensionsApi, Integration, IntegrationType, API_BASE } from "@/lib/api";
 
 // ─── Integration type icon mapping ───────────────────────────────────────────
 
@@ -363,7 +363,21 @@ export default function IntegrationsPage() {
         }
     }
 
+    const [refreshing, setRefreshing] = useState(false);
+
+    async function handleRefreshExtensions() {
+        setRefreshing(true);
+        try {
+            await extensionsApi.refresh();
+            await load();
+        } finally {
+            setRefreshing(false);
+        }
+    }
+
     const typeKeys = Object.keys(types);
+    const builtInKeys = typeKeys.filter(k => !types[k].is_extension);
+    const extensionKeys = typeKeys.filter(k => types[k].is_extension);
     const filteredIntegrations = integrations.filter(i => {
         if (filterType !== "all" && i.type !== filterType) return false;
         if (search && !i.name.toLowerCase().includes(search.toLowerCase()) && !i.type.toLowerCase().includes(search.toLowerCase())) return false;
@@ -381,7 +395,7 @@ export default function IntegrationsPage() {
                             Integrations
                         </h1>
                         <p className="text-sm text-stone-500 mt-0.5">
-                            Connect Notion, Linear, Jira, Slack, GitLab, and GitHub to your agents
+                            Connect services and extensions to your agents
                         </p>
                     </div>
                     <div className="flex items-center gap-3">
@@ -399,11 +413,11 @@ export default function IntegrationsPage() {
             </div>
 
             <div className="flex-1 p-6 space-y-8">
-                {/* Available integration types */}
+                {/* Built-in integration types */}
                 <section>
-                    <h2 className="text-sm font-semibold text-stone-700 mb-4 uppercase tracking-wider">Available Integrations</h2>
+                    <h2 className="text-sm font-semibold text-stone-700 mb-4 uppercase tracking-wider">Built-in Integrations</h2>
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-                        {typeKeys.map(typeKey => {
+                        {builtInKeys.map(typeKey => {
                             const meta = types[typeKey];
                             const count = integrations.filter(i => i.type === typeKey).length;
                             return (
@@ -424,6 +438,62 @@ export default function IntegrationsPage() {
                             );
                         })}
                     </div>
+                </section>
+
+                {/* Extensions */}
+                <section>
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-sm font-semibold text-stone-700 uppercase tracking-wider flex items-center gap-2">
+                            <Puzzle className="w-4 h-4" />
+                            Extensions
+                            {extensionKeys.length > 0 && (
+                                <span className="text-xs font-normal text-stone-400 normal-case">({extensionKeys.length})</span>
+                            )}
+                        </h2>
+                        <button
+                            onClick={handleRefreshExtensions}
+                            disabled={refreshing}
+                            className="flex items-center gap-1.5 text-xs text-stone-500 hover:text-stone-700 px-3 py-1.5 rounded-lg border border-stone-200 hover:border-stone-400 transition-colors disabled:opacity-50"
+                        >
+                            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
+                            Refresh
+                        </button>
+                    </div>
+                    {extensionKeys.length === 0 ? (
+                        <div className="bg-white border border-dashed border-stone-300 rounded-xl p-6 text-center">
+                            <Puzzle className="w-8 h-8 text-stone-300 mx-auto mb-2" />
+                            <p className="text-sm text-stone-500 font-medium">No extensions installed</p>
+                            <p className="text-xs text-stone-400 mt-1">
+                                Drop a Python tool file into <code className="bg-stone-100 px-1.5 py-0.5 rounded text-[10px]">backend/app/tools/extensions/</code> and click Refresh
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                            {extensionKeys.map(typeKey => {
+                                const meta = types[typeKey];
+                                const count = integrations.filter(i => i.type === typeKey).length;
+                                return (
+                                    <button
+                                        key={typeKey}
+                                        onClick={() => setModal({ typeKey, existing: null })}
+                                        className="bg-white border border-indigo-100 rounded-xl p-4 text-center hover:shadow-md hover:border-indigo-300 transition-all group"
+                                    >
+                                        <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold mx-auto mb-2 bg-indigo-600 text-white">
+                                            {TYPE_ICONS[typeKey] ?? typeKey[0].toUpperCase()}
+                                        </div>
+                                        <p className="text-sm font-semibold text-stone-900 group-hover:text-indigo-700">{meta.name}</p>
+                                        {meta.version && (
+                                            <p className="text-[10px] text-stone-400 font-mono">v{meta.version}</p>
+                                        )}
+                                        {count > 0 && (
+                                            <p className="text-[10px] text-indigo-700 font-medium mt-0.5">{count} connected</p>
+                                        )}
+                                        <p className="text-xs text-stone-400 mt-1 line-clamp-2 hidden group-hover:block">{meta.description}</p>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
                 </section>
 
                 {/* Connected integrations */}

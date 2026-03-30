@@ -121,6 +121,17 @@ async def delete_integration(integration_id: str, db: AsyncSession = Depends(get
     await db.commit()
 
 
+@router.post("/extensions/refresh")
+async def refresh_extensions():
+    """Re-scan the extensions directory and reload all extension manifests."""
+    from app.tools.extensions import discover_extensions
+
+    errors = discover_extensions(force_reload=True)
+    from app.tools.extensions import get_extension_registry
+    loaded = list(get_extension_registry().keys())
+    return {"ok": True, "extensions_loaded": len(loaded), "loaded": loaded, "errors": errors}
+
+
 @router.post("/{integration_id}/test")
 async def test_integration(integration_id: str, db: AsyncSession = Depends(get_db)):
     """Test an integration by making a lightweight API call to verify the credentials."""
@@ -134,6 +145,20 @@ async def test_integration(integration_id: str, db: AsyncSession = Depends(get_d
     cfg = row.extra_config or {}
 
     try:
+        # Check if this is an extension type first (before built-in httpx block)
+        from app.tools.extensions import get_extension_registry
+        ext_registry = get_extension_registry()
+        ext_info = ext_registry.get(row.type)
+        if ext_info and hasattr(ext_info.module, "test_connection"):
+            import asyncio
+            test_fn = ext_info.module.test_connection
+            if asyncio.iscoroutinefunction(test_fn):
+                return await test_fn(creds, cfg)
+            else:
+                return test_fn(creds, cfg)
+        elif ext_info:
+            return {"ok": True, "detail": f"Extension '{ext_info.manifest['name']}' is loaded (no test function defined)"}
+
         async with httpx.AsyncClient(timeout=10) as client:
             if row.type == "notion":
                 resp = await client.get(
