@@ -1,5 +1,6 @@
 """LangChain tools for agents to request human approval before high-stakes actions."""
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -188,6 +189,20 @@ def create_approval_tools(agent_id: str):
                 })
             except Exception as e:
                 logger.warning(f"WebSocket broadcast failed for approval {req.id}: {e}")
+
+            # Notify via Telegram (fire-and-forget)
+            try:
+                from app.integrations.telegram_bot import notify_approval_via_telegram
+                asyncio.create_task(notify_approval_via_telegram(
+                    approval_id=req.id,
+                    title=title,
+                    description=description,
+                    category=category,
+                    risk_level=risk_level,
+                    agent_id=agent_id,
+                ))
+            except Exception as e:
+                logger.debug(f"Telegram approval notification skipped: {e}")
 
             return json.dumps({
                 "approval_id": req.id,

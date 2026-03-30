@@ -3,6 +3,7 @@ import logging
 import re
 import asyncio
 from typing import Any
+from datetime import datetime, timezone
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -15,12 +16,17 @@ from telegram.ext import (
     filters,
 )
 
+from sqlalchemy import select
+
 # ConversationHandler states for forge feedback collection
 FORGE_FEEDBACK = 1
 
 from app.config import settings
 from app.core.agent_manager import agent_manager
 from app.core.orchestrator import orchestrator
+from app.db.session import async_session_factory
+from app.models.conversation import Conversation, Message
+from app.core.conversation_window import get_windowed_history
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +70,22 @@ def _find_agent_by_name(name: str) -> tuple[str | None, str | None]:
             return aid, config.get("name")
     return None, None
 
+
+async def _find_agent_by_chat_id(chat_id: str) -> tuple[str | None, str | None]:
+    """Find a running agent whose telegram_chat_id matches this chat. Returns (agent_id, agent_name)."""
+    from app.models.agent import Agent
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Agent).where(
+                Agent.telegram_chat_id == chat_id,
+                Agent.telegram_enabled == True,  # noqa: E712
+            )
+        )
+        agent = result.scalar_one_or_none()
+        if agent and agent_manager.is_running(agent.id):
+            return agent.id, agent.name
+    return None, None
+
 def _get_default_agent() -> tuple[str | None, str | None]:
     """Get the default agent (prioritizing 'Dash', else the first running agent). Returns (agent_id, agent_name)."""
     running = agent_manager.get_running_agents()
@@ -83,17 +105,162 @@ def _get_default_agent() -> tuple[str | None, str | None]:
     name = entry.get("config", {}).get("name", "Agent")
     return aid, name
 
+async def _route_with_history(
+    agent_id: str, agent_name: str, message: str, chat_id: str,
+    project_id: str | None = None,
+) -> dict:
+    """Route a message to an agent with persistent conversation history and memory.
+
+    Mirrors the chat API pattern: persists messages, loads windowed history,
+    passes db for memory injection, and fires auto-extract memories.
+    """
+    async with async_session_factory() as db:
+        # Get or create conversation for this chat+agent+project combination
+        query = (
+            select(Conversation)
+            .where(
+                Conversation.agent_id == agent_id,
+                Conversation.source == "telegram",
+                Conversation.source_id == str(chat_id),
+            )
+        )
+        if project_id:
+            query = query.where(Conversation.project_id == project_id)
+        else:
+            query = query.where(Conversation.project_id.is_(None))
+
+        result = await db.execute(query.order_by(Conversation.updated_at.desc()).limit(1))
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            title_parts = [f"Telegram: {agent_name}"]
+            if project_id:
+                from app.models.project import Project
+                proj = await db.get(Project, project_id)
+                if proj:
+                    title_parts.append(f"[{proj.name}]")
+            conversation = Conversation(
+                agent_id=agent_id,
+                title=" ".join(title_parts),
+                source="telegram",
+                source_id=str(chat_id),
+                project_id=project_id,
+            )
+            db.add(conversation)
+            await db.flush()
+
+        # Save user message
+        user_msg = Message(
+            conversation_id=conversation.id,
+            role="user",
+            content=message,
+        )
+        db.add(user_msg)
+        await db.flush()
+
+        # Load windowed history (excludes the message we just added)
+        chat_history = await get_windowed_history(db, conversation.id, exclude_last=True)
+
+        # Route to agent with history and db (enables memory injection)
+        response = await orchestrator.route_message(
+            agent_id=agent_id,
+            message=message,
+            chat_history=chat_history,
+            db=db,
+        )
+
+        # Save assistant response
+        assistant_msg = Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=response["output"],
+            tool_calls=(
+                {"steps": response.get("intermediate_steps", [])}
+                if response.get("intermediate_steps")
+                else None
+            ),
+        )
+        db.add(assistant_msg)
+
+        # Update conversation timestamp
+        conversation.updated_at = datetime.now(timezone.utc)
+        conv_id = conversation.id
+        await db.commit()
+
+    # Fire-and-forget: auto-extract memories
+    try:
+        info = agent_manager.get_info(agent_id) or {}
+        asyncio.create_task(_auto_extract_memories_bg(
+            agent_id=agent_id,
+            user_message=message,
+            assistant_response=response["output"],
+            llm_provider=info.get("llm_provider", ""),
+            llm_model=info.get("llm_model", ""),
+            project_id=project_id,
+            conversation_id=conv_id,
+        ))
+    except Exception:
+        pass
+
+    return response
+
+
+async def _auto_extract_memories_bg(
+    agent_id: str, user_message: str, assistant_response: str,
+    llm_provider: str, llm_model: str,
+    project_id: str | None = None,
+    conversation_id: str | None = None,
+):
+    """Background: extract key facts from a conversation exchange."""
+    try:
+        from app.core.memory_service import memory_service
+        async with async_session_factory() as db:
+            await memory_service.auto_extract(
+                db=db,
+                agent_id=agent_id,
+                user_message=user_message,
+                assistant_response=assistant_response,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+            )
+            # Auto-extract project decisions if project is active
+            if project_id:
+                try:
+                    from app.core.project_memory_service import auto_extract_decisions
+                    await auto_extract_decisions(
+                        db=db,
+                        project_id=project_id,
+                        agent_id=agent_id,
+                        user_message=user_message,
+                        assistant_response=assistant_response,
+                        llm_provider=llm_provider,
+                        llm_model=llm_model,
+                        conversation_id=conversation_id,
+                    )
+                except Exception:
+                    pass
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"Memory auto-extract failed for agent {agent_id}: {e}")
+
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     await update.message.reply_text(
         "👋 Welcome to Sutra AI Telegram Bot!\n\n"
         "You can talk to authorized AI agents here.\n\n"
         "Commands:\n"
+        "/switch [agent] - Switch active agent (keeps history per agent)\n"
+        "/connect [agent] - Link this chat to an agent (persists to DB)\n"
+        "/disconnect - Unlink this chat from its agent\n"
         "/agents - List running agents\n"
         "/ask [agent] [message] - Ask a specific agent\n"
+        "/project [name] - Set active project context\n"
+        "/project list - List available projects\n"
+        "/newchat - Start a fresh conversation\n"
         "/status - Check system status\n"
         "/forge [description] - Build a feature autonomously\n\n"
-        "Or just message me to talk to the default agent."
+        "Quick start: use /connect <agent-name> to link this chat to an agent, "
+        "then just type normally to talk."
     )
 
 async def agents_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -113,6 +280,12 @@ async def agents_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
+async def chatid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /chatid — show the current chat's ID."""
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(f"Chat ID: `{chat_id}`", parse_mode="MarkdownV2")
+
+
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /status command."""
     running_count = len(agent_manager.get_running_agents())
@@ -122,6 +295,310 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Running Agents: {running_count}",
         parse_mode="MarkdownV2"
     )
+
+async def switch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /switch <agent-name> — switch the active agent for this chat (soft, no DB changes)."""
+    if not context.args:
+        # Show current active agent
+        active_id = context.chat_data.get("active_agent_id") if context.chat_data else None
+        active_name = context.chat_data.get("active_agent_name") if context.chat_data else None
+        if active_id:
+            safe = escape_markdown(active_name or active_id)
+            await update.message.reply_text(
+                f"🔀 Active agent: *{safe}*\n\nUse `/switch <agent\\-name>` to change\\.",
+                parse_mode="MarkdownV2",
+            )
+        else:
+            await update.message.reply_text(
+                "No agent selected\\. Use `/switch <agent\\-name>` to pick one\\.\n"
+                "Use `/agents` to see available agents\\.",
+                parse_mode="MarkdownV2",
+            )
+        return
+
+    query = " ".join(context.args).strip()
+
+    # Find agent by name
+    agent_id, agent_name = _find_agent_by_name(query)
+    if not agent_id:
+        for aid in agent_manager.get_running_agents():
+            entry = agent_manager._running_agents.get(aid, {})
+            config = entry.get("config", {})
+            name = config.get("name", "")
+            if name.lower().startswith(query.lower()):
+                agent_id = aid
+                agent_name = name
+                break
+
+    if not agent_id:
+        safe = escape_markdown(query)
+        await update.message.reply_text(
+            f"❌ Agent '{safe}' not found or not running\\. Use `/agents` to list available agents\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    context.chat_data["active_agent_id"] = agent_id
+    context.chat_data["active_agent_name"] = agent_name
+
+    safe = escape_markdown(agent_name)
+    await update.message.reply_text(
+        f"🔀 Switched to *{safe}*\\. All messages in this chat now go to this agent\\.\n"
+        f"Conversation history is preserved per agent — switching back will resume where you left off\\.",
+        parse_mode="MarkdownV2",
+    )
+
+
+async def connect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /connect <agent-name> — link this Telegram chat to an agent."""
+    if not context.args:
+        # Show current connection
+        chat_id = str(update.effective_chat.id)
+        agent_id, agent_name = await _find_agent_by_chat_id(chat_id)
+        if agent_id:
+            safe = escape_markdown(agent_name)
+            await update.message.reply_text(
+                f"🔗 This chat is connected to *{safe}*\\.\n\n"
+                f"Use `/connect <agent\\-name>` to switch or `/disconnect` to unlink\\.",
+                parse_mode="MarkdownV2",
+            )
+        else:
+            await update.message.reply_text(
+                "This chat is not connected to any agent\\.\n"
+                "Use `/connect <agent\\-name>` to link one\\.\n"
+                "Use `/agents` to see available agents\\.",
+                parse_mode="MarkdownV2",
+            )
+        return
+
+    query = " ".join(context.args).strip()
+    chat_id = str(update.effective_chat.id)
+
+    # Find the agent by name (case-insensitive, then prefix match)
+    agent_id, agent_name = _find_agent_by_name(query)
+    if not agent_id:
+        for aid in agent_manager.get_running_agents():
+            entry = agent_manager._running_agents.get(aid, {})
+            config = entry.get("config", {})
+            name = config.get("name", "")
+            if name.lower().startswith(query.lower()):
+                agent_id = aid
+                agent_name = name
+                break
+
+    if not agent_id:
+        # Also try finding by name in DB (agent might not be running yet)
+        from app.models.agent import Agent
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(Agent).where(Agent.name.ilike(query)).limit(1)
+            )
+            agent = result.scalar_one_or_none()
+            if not agent:
+                result = await db.execute(
+                    select(Agent).where(Agent.name.ilike(f"{query}%")).limit(1)
+                )
+                agent = result.scalar_one_or_none()
+            if agent:
+                agent_id = agent.id
+                agent_name = agent.name
+
+    if not agent_id:
+        safe = escape_markdown(query)
+        await update.message.reply_text(f"❌ Agent '{safe}' not found\\. Use `/agents` to list available agents\\.", parse_mode="MarkdownV2")
+        return
+
+    # Check if another agent already uses this chat_id
+    existing_id, existing_name = await _find_agent_by_chat_id(chat_id)
+    if existing_id and existing_id != agent_id:
+        # Unlink the old agent
+        from app.models.agent import Agent
+        async with async_session_factory() as db:
+            old_agent = await db.get(Agent, existing_id)
+            if old_agent:
+                old_agent.telegram_chat_id = None
+                old_agent.telegram_enabled = False
+                await db.commit()
+
+    # Link agent to this chat
+    from app.models.agent import Agent
+    async with async_session_factory() as db:
+        agent = await db.get(Agent, agent_id)
+        if agent:
+            agent.telegram_chat_id = chat_id
+            agent.telegram_enabled = True
+            await db.commit()
+
+    safe = escape_markdown(agent_name)
+    await update.message.reply_text(
+        f"🔗 Connected\\! This chat is now linked to *{safe}*\\.\n\n"
+        f"All messages here will auto\\-route to this agent\\. "
+        f"Use `/disconnect` to unlink\\.",
+        parse_mode="MarkdownV2",
+    )
+
+
+async def disconnect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /disconnect — unlink the current chat from its agent."""
+    chat_id = str(update.effective_chat.id)
+    agent_id, agent_name = await _find_agent_by_chat_id(chat_id)
+
+    if not agent_id:
+        await update.message.reply_text("This chat is not connected to any agent\\.", parse_mode="MarkdownV2")
+        return
+
+    from app.models.agent import Agent
+    async with async_session_factory() as db:
+        agent = await db.get(Agent, agent_id)
+        if agent:
+            agent.telegram_chat_id = None
+            agent.telegram_enabled = False
+            await db.commit()
+
+    safe = escape_markdown(agent_name)
+    await update.message.reply_text(
+        f"🔗 Disconnected from *{safe}*\\. Messages will now go to the default agent\\.",
+        parse_mode="MarkdownV2",
+    )
+
+
+async def project_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /project [name] — set or show the active project for this chat."""
+    if not context.args:
+        # Show current project
+        current = context.chat_data.get("project_id") if context.chat_data else None
+        current_name = context.chat_data.get("project_name") if context.chat_data else None
+        if current:
+            safe = escape_markdown(current_name or current)
+            await update.message.reply_text(f"📁 Active project: *{safe}*\n\nUse `/project <name>` to switch or `/project clear` to unset\\.", parse_mode="MarkdownV2")
+        else:
+            await update.message.reply_text("No active project\\. Use `/project <name>` to set one\\.", parse_mode="MarkdownV2")
+        return
+
+    query = " ".join(context.args).strip()
+
+    # Clear project
+    if query.lower() == "clear":
+        context.chat_data["project_id"] = None
+        context.chat_data["project_name"] = None
+        # Also clear the agent's active project
+        chat_id = str(update.effective_chat.id)
+        agent_id, _ = await _find_agent_by_chat_id(chat_id)
+        if not agent_id:
+            agent_id, _ = _get_default_agent()
+        if agent_id:
+            try:
+                from app.core.project_memory_service import set_active_project
+                async with async_session_factory() as db:
+                    await set_active_project(db, agent_id, None)
+                    await db.commit()
+            except Exception:
+                pass
+        await update.message.reply_text("📁 Project cleared\\. Messages will use the default context\\.", parse_mode="MarkdownV2")
+        return
+
+    # List projects
+    if query.lower() == "list":
+        from app.models.project import Project, ProjectStatus
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(Project).where(Project.status == ProjectStatus.active.value).order_by(Project.name)
+            )
+            projects = result.scalars().all()
+        if not projects:
+            await update.message.reply_text("No active projects found\\.", parse_mode="MarkdownV2")
+            return
+        lines = ["📁 *Active Projects:*\n"]
+        for p in projects:
+            safe_name = escape_markdown(p.name)
+            safe_slug = escape_markdown(p.slug or "")
+            lines.append(f"• *{safe_name}* — `{safe_slug}`")
+        await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
+        return
+
+    # Find project by name or slug
+    from app.models.project import Project, ProjectStatus
+    async with async_session_factory() as db:
+        # Try slug first, then name (case-insensitive)
+        result = await db.execute(
+            select(Project).where(
+                Project.status == ProjectStatus.active.value,
+                (Project.slug == query.lower()) | (Project.name.ilike(query)),
+            ).limit(1)
+        )
+        project = result.scalar_one_or_none()
+
+        # Fuzzy: try prefix match
+        if not project:
+            result = await db.execute(
+                select(Project).where(
+                    Project.status == ProjectStatus.active.value,
+                    Project.name.ilike(f"{query}%"),
+                ).limit(1)
+            )
+            project = result.scalar_one_or_none()
+
+    if not project:
+        safe = escape_markdown(query)
+        await update.message.reply_text(f"❌ Project '{safe}' not found\\. Use `/project list` to see available projects\\.", parse_mode="MarkdownV2")
+        return
+
+    context.chat_data["project_id"] = project.id
+    context.chat_data["project_name"] = project.name
+
+    # Also update the agent's active project so orchestrator memory injection picks it up
+    chat_id = str(update.effective_chat.id)
+    agent_id, _ = await _find_agent_by_chat_id(chat_id)
+    if not agent_id:
+        agent_id, _ = _get_default_agent()
+    if agent_id:
+        try:
+            from app.core.project_memory_service import set_active_project
+            async with async_session_factory() as db:
+                await set_active_project(db, agent_id, project.id)
+                await db.commit()
+        except Exception:
+            pass
+
+    safe = escape_markdown(project.name)
+    await update.message.reply_text(f"📁 Active project set to *{safe}*\\. All messages in this chat will now use this project context\\.", parse_mode="MarkdownV2")
+
+
+async def newchat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /newchat — start a fresh conversation (new Conversation record)."""
+    chat_id = str(update.effective_chat.id)
+    project_id = context.chat_data.get("project_id") if context.chat_data else None
+
+    # Find the agent for this chat
+    agent_id, agent_name = await _find_agent_by_chat_id(chat_id)
+    if not agent_id:
+        agent_id, agent_name = _get_default_agent()
+
+    if not agent_id:
+        await update.message.reply_text("❌ No agent available\\.", parse_mode="MarkdownV2")
+        return
+
+    # Create a new conversation explicitly
+    async with async_session_factory() as db:
+        title_parts = [f"Telegram: {agent_name}"]
+        if project_id:
+            from app.models.project import Project
+            proj = await db.get(Project, project_id)
+            if proj:
+                title_parts.append(f"[{proj.name}]")
+        conv = Conversation(
+            agent_id=agent_id,
+            title=" ".join(title_parts),
+            source="telegram",
+            source_id=chat_id,
+            project_id=project_id,
+        )
+        db.add(conv)
+        await db.commit()
+
+    safe_name = escape_markdown(agent_name)
+    await update.message.reply_text(f"🆕 New conversation started with *{safe_name}*\\. Previous history will not be carried over\\.", parse_mode="MarkdownV2")
+
 
 async def ask_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /ask [agent] [message]."""
@@ -156,13 +633,12 @@ async def ask_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Thinking...
     safe_name = escape_markdown(agent_name)
+    chat_id = str(update.effective_chat.id)
     think_msg = await update.message.reply_text(f"🤖 *{safe_name}* is thinking\.\.\.", parse_mode="MarkdownV2")
 
+    project_id = context.chat_data.get("project_id") if context.chat_data else None
     try:
-        response = await orchestrator.route_message(
-            agent_id=agent_id,
-            message=message,
-        )
+        response = await _route_with_history(agent_id, agent_name, message, chat_id, project_id=project_id)
         safe_response = escape_markdown(response['output'])
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
@@ -184,7 +660,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text.strip()
-    
+
+    chat_id = str(update.effective_chat.id)
     agent_id, agent_name = None, None
     message = text
 
@@ -196,6 +673,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if agent_id:
             message = match.group(2).strip()
 
+    # Check chat_data for /switch selection
+    if not agent_id and context.chat_data and context.chat_data.get("active_agent_id"):
+        switched_id = context.chat_data["active_agent_id"]
+        switched_name = context.chat_data.get("active_agent_name", "Agent")
+        if agent_manager.is_running(switched_id):
+            agent_id, agent_name = switched_id, switched_name
+
+    # Try to find agent by chat_id (dedicated chat per agent)
+    if not agent_id:
+        agent_id, agent_name = await _find_agent_by_chat_id(chat_id)
+
     # Fall back to default
     if not agent_id:
         agent_id, agent_name = _get_default_agent()
@@ -206,14 +694,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Thinking...
     safe_name = escape_markdown(agent_name)
+    project_id = context.chat_data.get("project_id") if context.chat_data else None
     think_msg = await update.message.reply_text(f"🤖 *{safe_name}* is thinking\.\.\.", parse_mode="MarkdownV2")
 
     try:
-        response = await orchestrator.route_message(
-            agent_id=agent_id,
-            message=message,
-        )
-        # Handle long responses (Markdown v2 can be picky, using Markdown v2/classic)
+        response = await _route_with_history(agent_id, agent_name, message, chat_id, project_id=project_id)
         safe_response = escape_markdown(response['output'])
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
@@ -775,6 +1260,182 @@ async def _telegram_forge_code_and_pr(
             )
 
 
+async def notify_approval_via_telegram(
+    approval_id: str,
+    title: str,
+    description: str,
+    category: str,
+    risk_level: str,
+    agent_id: str,
+):
+    """Send an approval request notification to Telegram with inline approve/reject buttons."""
+    global _application
+    if not _application or not _application.bot:
+        return
+
+    # Determine which chat to notify: agent's telegram_chat_id or default
+    # Note: we check telegram_chat_id regardless of telegram_enabled — an agent
+    # might have a chat_id for receiving approval notifications even if it doesn't
+    # listen for incoming Telegram messages.
+    chat_id = None
+    try:
+        from app.models.agent import Agent
+        async with async_session_factory() as db:
+            agent = await db.get(Agent, agent_id)
+            if agent and agent.telegram_chat_id:
+                chat_id = str(agent.telegram_chat_id).strip()
+                logger.debug("Using agent %s telegram_chat_id: %r", agent_id, chat_id)
+    except Exception as e:
+        logger.debug("Failed to look up agent telegram_chat_id: %s", e)
+
+    if not chat_id:
+        chat_id = str(settings.telegram_default_chat_id).strip() if settings.telegram_default_chat_id else None
+
+    if not chat_id:
+        logger.debug("No Telegram chat_id for approval notification (agent %s)", agent_id)
+        return
+
+    # Get agent name for display
+    info = agent_manager.get_info(agent_id) or {}
+    agent_name = info.get("name", "Unknown Agent")
+
+    risk_emoji = {"low": "🟢", "medium": "🟡", "high": "🟠", "critical": "🔴"}.get(risk_level, "⚪")
+
+    text = (
+        f"🔔 *Approval Required*\n\n"
+        f"*{escape_markdown(title)}*\n\n"
+        f"{escape_markdown(description)}\n\n"
+        f"Agent: {escape_markdown(agent_name)}\n"
+        f"Category: {escape_markdown(category)} \\| Risk: {risk_emoji} {escape_markdown(risk_level)}\n"
+        f"ID: `{escape_markdown(approval_id[:8])}`"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"approval_{approval_id}_approve"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"approval_{approval_id}_reject"),
+        ]
+    ])
+
+    try:
+        # Telegram expects numeric chat_id for private/group chats
+        resolved_chat_id = int(chat_id) if chat_id.lstrip("-").isdigit() else chat_id
+        await _application.bot.send_message(
+            chat_id=resolved_chat_id,
+            text=text,
+            parse_mode="MarkdownV2",
+            reply_markup=keyboard,
+        )
+        logger.info("Sent approval notification to Telegram chat %s for approval %s", chat_id, approval_id[:8])
+    except Exception as e:
+        logger.error("Failed to send Telegram approval notification to chat_id=%r: %s", chat_id, e)
+
+
+async def approval_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard button presses for approval approve/reject."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+
+    # Parse: approval_{uuid}_approve or approval_{uuid}_reject
+    match = re.match(r"approval_([a-f0-9-]+)_(approve|reject)", data)
+    if not match:
+        return
+
+    approval_id, action = match.group(1), match.group(2)
+    telegram_user = update.effective_user
+    telegram_user_name = telegram_user.full_name if telegram_user else "Telegram User"
+
+    from app.models.approval_request import ApprovalRequest, ApprovalStatus
+
+    async with async_session_factory() as db:
+        req = await db.get(ApprovalRequest, approval_id)
+        if not req:
+            await query.edit_message_text("⚠️ Approval request not found\\.", parse_mode="MarkdownV2")
+            return
+
+        if req.status != ApprovalStatus.pending.value:
+            status_display = escape_markdown(req.status)
+            await query.edit_message_text(
+                f"ℹ️ This request is already *{status_display}*\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+
+        # Find the owner user for reviewer_user_id
+        reviewer_user_id = None
+        try:
+            from app.models.user import User
+            result = await db.execute(
+                select(User).order_by(User.created_at.asc()).limit(1)
+            )
+            owner = result.scalar_one_or_none()
+            if owner:
+                reviewer_user_id = owner.id
+        except Exception:
+            pass
+
+        if action == "approve":
+            req.status = ApprovalStatus.approved.value
+            req.reviewer_note = f"Approved via Telegram by {telegram_user_name}"
+            req.reviewer_user_id = reviewer_user_id
+            req.decided_at = datetime.now(timezone.utc)
+            await db.commit()
+
+            # Execute deferred action if present
+            if req.action_payload:
+                try:
+                    from app.api.routes.approvals import _execute_approved_action
+                    await _execute_approved_action(req, db)
+                except Exception as e:
+                    logger.error("Failed to execute approved action for %s: %s", approval_id[:8], e)
+
+            safe_title = escape_markdown(req.title)
+            await query.edit_message_text(
+                f"✅ *Approved* by {escape_markdown(telegram_user_name)}\n\n{safe_title}",
+                parse_mode="MarkdownV2",
+            )
+
+        else:  # reject
+            req.status = ApprovalStatus.rejected.value
+            req.reviewer_note = f"Rejected via Telegram by {telegram_user_name}"
+            req.reviewer_user_id = reviewer_user_id
+            req.decided_at = datetime.now(timezone.utc)
+            await db.commit()
+
+            safe_title = escape_markdown(req.title)
+            await query.edit_message_text(
+                f"❌ *Rejected* by {escape_markdown(telegram_user_name)}\n\n{safe_title}",
+                parse_mode="MarkdownV2",
+            )
+
+        # Broadcast WebSocket update
+        try:
+            from app.api.websocket import ws_manager
+            await ws_manager.broadcast({
+                "type": f"approval_{action}d",
+                "approval_id": approval_id,
+                "title": req.title,
+                "reviewer_note": req.reviewer_note,
+            })
+        except Exception:
+            pass
+
+        # Dispatch webhook
+        try:
+            from app.core.webhook_dispatcher import dispatch_webhook
+            await dispatch_webhook(f"approval.{action}d", {
+                "approval_id": approval_id,
+                "title": req.title,
+                "status": req.status,
+                "reviewer_note": req.reviewer_note,
+            })
+        except Exception:
+            pass
+
+    logger.info("Approval %s %sd via Telegram by %s", approval_id[:8], action, telegram_user_name)
+
+
 async def start_telegram_bot():
     """Build and start the Telegram bot application."""
     token = await get_telegram_bot_token()
@@ -801,10 +1462,17 @@ async def start_telegram_bot():
         # Add handlers
         _application.add_handler(CommandHandler("start", start_handler))
         _application.add_handler(CommandHandler("agents", agents_handler))
+        _application.add_handler(CommandHandler("chatid", chatid_handler))
         _application.add_handler(CommandHandler("status", status_handler))
         _application.add_handler(CommandHandler("ask", ask_handler))
+        _application.add_handler(CommandHandler("switch", switch_handler))
+        _application.add_handler(CommandHandler("connect", connect_handler))
+        _application.add_handler(CommandHandler("disconnect", disconnect_handler))
+        _application.add_handler(CommandHandler("project", project_handler))
+        _application.add_handler(CommandHandler("newchat", newchat_handler))
         _application.add_handler(CommandHandler("forge", forge_handler))
         _application.add_handler(forge_conv_handler)
+        _application.add_handler(CallbackQueryHandler(approval_callback_handler, pattern=r"^approval_"))
         _application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message_handler))
 
         # Initializing the application
