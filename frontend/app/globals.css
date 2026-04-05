@@ -1,0 +1,109 @@
+/* Using system fonts */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --gradient-brand: linear-gradient(135deg, #8b7355 0%, #a08968 50%, #cfc1ad 100%);
+    --gradient-surface: linear-gradient(180deg, #FAF8F5 0%, #ffffff 100%);
+    --gradient-glow: radial-gradient(ellipse at center, rgba(160, 137, 104, 0.1) 0%, transparent 70%);
+  }
+
+  .dark {
+    --gradient-surface: linear-gradient(180deg, #1a1816 0%, #242120 100%);
+    --gradient-glow: radial-gradient(ellipse at center, rgba(160, 137, 104, 0.06) 0%, transparent 70%);
+  }
+
+  body {
+    @apply bg-surface-1 text-stone-800 antialiased;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    @apply border-stone-200 dark:border-stone-700;
+  }
+}
+
+@layer components {
+
+  /* Glass Card */
+  .glass-card {
+    @apply bg-white/95 backdrop-blur-xl border border-stone-200/60 rounded-xl shadow-sm shadow-stone-200/50;
+  }
+
+  /* Status Indicators */
+  .status-dot {
+    @apply w-2.5 h-2.5 rounded-full;
+  }
+
+  .status-dot-running {
+    @apply bg-accent-success animate-pulse;
+  }
+
+  .status-dot-stopped {
+    @apply bg-stone-400 dark:bg-stone-600;
+  }
+
+  .status-dot-starting {
+    @apply bg-accent-warning animate-pulse;
+  }
+
+  .status-dot-error {
+    @apply bg-accent-error;
+  }
+
+  /* Button Variants */
+  .btn-primary {
+    @apply px-4 py-2 bg-stone-800 hover:bg-stone-700 text-white rounded-lg font-medium text-sm transition-colors duration-200 ease-out shadow-sm hover:shadow active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2 bg-white hover:bg-stone-50 text-stone-700 rounded-lg font-medium text-sm transition-colors duration-200 ease-out border border-stone-200 shadow-sm active:scale-[0.98];
+  }
+
+  .btn-danger {
+    @apply px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:text-red-400 rounded-lg font-medium text-sm transition-colors duration-200 ease-out active:scale-[0.98];
+  }
+
+  .btn-icon {
+    @apply p-2 rounded-lg hover:bg-surface-2 dark:hover:bg-surface-dark3 text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors duration-200;
+  }
+
+  /* Input */
+  .input {
+    @apply w-full px-3 py-2 rounded-lg bg-white dark:bg-surface-dark2 border border-stone-200 dark:border-white/10 text-stone-800 dark:text-white placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400 transition-all duration-200 shadow-sm dark:shadow-none;
+  }
+
+  .textarea {
+    @apply input resize-none;
+  }
+
+  /* Sidebar */
+  .sidebar-link {
+    @apply flex items-center gap-3 px-3 py-2 rounded-lg text-stone-600 hover:text-stone-900 hover:bg-stone-200/50 transition-colors duration-150 text-sm font-medium;
+  }
+
+  .sidebar-link-active {
+    @apply text-stone-900 bg-white shadow-sm border border-stone-200/50 font-semibold;
+  }
+
+  /* Scrollbar */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-stone-300 dark:bg-stone-700 rounded-full;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-stone-400 dark:bg-stone-600;
+  }
+}

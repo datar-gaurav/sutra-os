@@ -1,0 +1,58 @@
+Sutra OS
+Copyright (c) 2026 Gaurav Datar
+
+This project includes the following third-party software:
+
+=== Backend (Python) ===
+
+FastAPI (MIT) - https://github.com/tiangolo/fastapi
+Uvicorn (BSD-3-Clause) - https://github.com/encode/uvicorn
+SQLAlchemy (MIT) - https://github.com/sqlalchemy/sqlalchemy
+asyncpg (Apache-2.0) - https://github.com/MagicStack/asyncpg
+Alembic (MIT) - https://github.com/sqlalchemy/alembic
+Pydantic (MIT) - https://github.com/pydantic/pydantic
+Redis-py (MIT) - https://github.com/redis/redis-py
+Celery (BSD-3-Clause) - https://github.com/celery/celery
+LangChain (MIT) - https://github.com/langchain-ai/langchain
+LangGraph (MIT) - https://github.com/langchain-ai/langgraph
+LiteLLM (MIT) - https://github.com/BerriAI/litellm
+Slack Bolt (MIT) - https://github.com/slackapi/bolt-python
+httpx (BSD-3-Clause) - https://github.com/encode/httpx
+cryptography (Apache-2.0 / BSD-3-Clause) - https://github.com/pyca/cryptography
+PyJWT (MIT) - https://github.com/jpadilla/pyjwt
+bcrypt (Apache-2.0) - https://github.com/pyca/bcrypt
+pandas (BSD-3-Clause) - https://github.com/pandas-dev/pandas
+openpyxl (MIT) - https://github.com/theorchard/openpyxl
+PyGithub (LGPL-3.0) - https://github.com/PyGithub/PyGithub
+GitPython (BSD-3-Clause) - https://github.com/gitpython-developers/GitPython
+Playwright (Apache-2.0) - https://github.com/microsoft/playwright-python
+Beautiful Soup 4 (MIT) - https://www.crummy.com/software/BeautifulSoup/
+gspread (MIT) - https://github.com/burnash/gspread
+google-auth (Apache-2.0) - https://github.com/googleapis/google-auth-library-python
+google-api-python-client (Apache-2.0) - https://github.com/googleapis/google-api-python-client
+APScheduler (MIT) - https://github.com/agronholm/apscheduler
+python-telegram-bot (LGPL-3.0) - https://github.com/python-telegram-bot/python-telegram-bot
+MCP (MIT) - https://github.com/modelcontextprotocol/python-sdk
+SlowAPI (MIT) - https://github.com/laurentS/slowapi
+pypdf (BSD-3-Clause) - https://github.com/py-pdf/pypdf
+pytrends (Apache-2.0) - https://github.com/GeneralMills/pytrends
+Docker SDK for Python (Apache-2.0) - https://github.com/docker/docker-py
+pywa (MIT) - https://github.com/david-lev/pywa
+psutil (BSD-3-Clause) - https://github.com/giampaolo/psutil
+websockets (BSD-3-Clause) - https://github.com/python-websockets/websockets
+
+=== Frontend (JavaScript/TypeScript) ===
+
+Next.js (MIT) - https://github.com/vercel/next.js
+React (MIT) - https://github.com/facebook/react
+TanStack Query (MIT) - https://github.com/TanStack/query
+React Flow / xyflow (MIT) - https://github.com/xyflow/xyflow
+Zustand (MIT) - https://github.com/pmndrs/zustand
+Tailwind CSS (MIT) - https://github.com/tailwindlabs/tailwindcss
+clsx (MIT) - https://github.com/lukeed/clsx
+tailwind-merge (MIT) - https://github.com/dcastil/tailwind-merge
+Lucide React (ISC) - https://github.com/lucide-icons/lucide
+TypeScript (Apache-2.0) - https://github.com/microsoft/TypeScript
+ESLint (MIT) - https://github.com/eslint/eslint
+PostCSS (MIT) - https://github.com/postcss/postcss
+Autoprefixer (MIT) - https://github.com/postcss/autoprefixer

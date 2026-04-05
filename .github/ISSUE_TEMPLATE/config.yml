@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions & Discussions
+    url: https://github.com/datar-gaurav/sutra-os/discussions
+    about: Ask questions or start a discussion — please don't open issues for general help.

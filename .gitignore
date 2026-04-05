@@ -1,0 +1,62 @@
+# Credentials (NEVER commit)
+**/google_credentials.json
+**/credentials*.json
+**/*.pem
+**/*.key
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Next.js
+.next/
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.*.local
+backend/.env
+backend/.ssh/
+
+# Backend Data & Cache
+backend/.cache/
+backend/.pki/
+backend/data/
+
+# AI context
+CLAUDE.md
+.claude/
+
+# Launch prep
+.prep.md
+docs/COMPARISONS.md
+
+# Build
+dist/
+build/
+
+# Root-level (not needed)
+/node_modules/
+/package.json
+/package-lock.json
+
+# Internal docs and audits (not for public repo)
+docs/
+security_audit.md
