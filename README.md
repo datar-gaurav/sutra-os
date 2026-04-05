@@ -6,6 +6,8 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![Next.js 14](https://img.shields.io/badge/Next.js-14-black.svg)](https://nextjs.org)
 
+**[Documentation](https://sutra.gauravdatar.com)** · **[Author](https://www.gauravdatar.com)** · **[Community (Facebook Group)](https://www.facebook.com/groups/919745454310655)**
+
 ---
 
 ## What is Sutra?
@@ -214,7 +216,7 @@ All configuration is done through environment variables (`backend/.env`) or the 
 
 ## Production Deployment
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full production deployment guide covering server requirements, TLS/HTTPS, security secrets, backups, and monitoring.
+See the [Documentation](https://sutra.gauravdatar.com) for the full production deployment guide covering server requirements, TLS/HTTPS, security secrets, backups, and monitoring.
 
 ## Contributing
 
