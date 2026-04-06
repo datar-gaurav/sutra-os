@@ -880,7 +880,7 @@ export default function ChatPage() {
                                             </button>
                                         ))}
                                     {agents.filter(a => a.name.toLowerCase().includes(mentionQuery.toLowerCase())).length === 0 && (
-                                        <p className="text-xs text-stone-400 p-3 text-center">No agents match "@{mentionQuery}"</p>
+                                        <p className="text-xs text-stone-400 p-3 text-center">No agents match &quot;@{mentionQuery}&quot;</p>
                                     )}
                                 </div>
                             </div>

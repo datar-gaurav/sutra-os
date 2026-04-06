@@ -288,7 +288,7 @@ export default function DiscussionDetailPage() {
                     {messages.length === 0 && !running && !error && (
                         <div className="flex flex-col items-center justify-center h-64 text-stone-400">
                             <MessageSquareText className="w-12 h-12 mb-3 opacity-30" />
-                            <p className="text-sm">Discussion hasn't started yet</p>
+                            <p className="text-sm">Discussion hasn&apos;t started yet</p>
                             {canRun && (
                                 <button onClick={handleRun} className="mt-3 px-4 py-2 text-sm rounded-lg bg-stone-700 text-white hover:bg-stone-700 flex items-center gap-2">
                                     <Play className="w-4 h-4" /> Run Discussion

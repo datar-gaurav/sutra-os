@@ -449,7 +449,7 @@ function InitiativeCard({
 
                     {initiative.status !== "pending" && initiative.reviewer_note && (
                         <p className="text-xs text-stone-400 italic pt-2 border-t border-stone-100">
-                            Note: "{initiative.reviewer_note}"
+                            Note: &quot;{initiative.reviewer_note}&quot;
                         </p>
                     )}
                 </div>

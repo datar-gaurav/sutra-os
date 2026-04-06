@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
     ArrowLeft,
@@ -155,7 +156,7 @@ export default function NewBatchJobPage() {
                     <p className="text-stone-500 text-sm mt-0.5">Choose which jobs to include in this batch. They will all run when the schedule fires.</p>
                 </div>
                 {jobs.length === 0 ? (
-                    <p className="text-stone-400 text-sm">No jobs found. <a href="/jobs/new" className="text-violet-600 hover:underline">Create a job first.</a></p>
+                    <p className="text-stone-400 text-sm">No jobs found. <Link href="/jobs/new" className="text-violet-600 hover:underline">Create a job first.</Link></p>
                 ) : (
                     <div className="space-y-2">
                         {jobs.map((job) => {
