@@ -584,9 +584,9 @@ export default function ChatPage() {
                                                             {conv.title || "Untitled Chat"}
                                                         </p>
                                                     </div>
-                                                    <button className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-stone-200 rounded transition-opacity">
+                                                    <div className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-stone-200 rounded transition-opacity">
                                                         <MoreVertical className="w-3 h-3 text-stone-400" />
-                                                    </button>
+                                                    </div>
                                                 </button>
                                             ))
                                         )}

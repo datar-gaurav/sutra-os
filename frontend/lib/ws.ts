@@ -39,8 +39,8 @@ class WSClient {
                 this.scheduleReconnect();
             };
 
-            this.ws.onerror = (err) => {
-                console.error("[WS] Error:", err);
+            this.ws.onerror = () => {
+                console.warn("[WS] Connection error (check that the backend is running)");
             };
         } catch (err) {
             console.error("[WS] Connection failed:", err);

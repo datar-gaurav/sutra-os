@@ -1,0 +1,8 @@
+# Development overrides — use with: docker compose -f docker-compose.yml -f docker-compose.dev.yml
+services:
+  backend:
+    command: [ "--reload" ]
+
+  frontend:
+    environment:
+      NEXT_DEV: "1"

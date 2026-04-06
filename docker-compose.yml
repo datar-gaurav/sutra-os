@@ -48,8 +48,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # start.sh is the ENTRYPOINT; pass --reload for dev mode
-    command: [ "--reload" ]
+    # start.sh is the ENTRYPOINT; override command with ["--reload"] in dev
 
   frontend:
     build:
@@ -60,6 +59,7 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
       NEXT_PUBLIC_WS_URL: ws://localhost:8000
+      NEXT_DEV: "0"
     volumes:
       - ./frontend:/app
       - /app/node_modules

@@ -2,16 +2,16 @@
 set -e
 
 # ════════════════════════════════════════════════
-#  Sutra AI Orchestrator — Start
+#  Sutra AI Orchestrator — Start (Dev Mode)
 #  Usage:
-#    ./start.sh          # Start (using cached images)
-#    ./start.sh --build  # Rebuild images then start
+#    ./start_dev.sh          # Start with hot-reload (cached images)
+#    ./start_dev.sh --build  # Rebuild images then start
 # ════════════════════════════════════════════════
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
-echo "🚀 Starting Sutra AI Orchestrator (production)..."
+echo "🛠  Starting Sutra AI Orchestrator (development)..."
 
 # Check Docker is running
 if ! docker info > /dev/null 2>&1; then
@@ -25,16 +25,16 @@ if [ ! -f backend/.env ]; then
     cp backend/.env.example backend/.env
 fi
 
-# Start (with optional rebuild)
+# Start with dev overrides (with optional rebuild)
 if [ "$1" = "--build" ]; then
-    docker compose up --build -d
+    docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
 else
-    docker compose up -d
+    docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 fi
 
 echo ""
 echo "  ╔═══════════════════════════════════════════╗"
-echo "  ║       ⚡ Sutra AI Orchestrator ⚡         ║"
+echo "  ║    🛠  Sutra AI Orchestrator (Dev) 🛠     ║"
 echo "  ╠═══════════════════════════════════════════╣"
 echo "  ║                                           ║"
 echo "  ║  Backend API   → http://localhost:8000    ║"
@@ -43,10 +43,13 @@ echo "  ║  Frontend      → http://localhost:3001    ║"
 echo "  ║  PostgreSQL    → localhost:5432           ║"
 echo "  ║  Redis         → localhost:6379           ║"
 echo "  ║                                           ║"
+echo "  ║  Backend: hot-reload enabled              ║"
+echo "  ║  Frontend: Next.js dev server             ║"
+echo "  ║                                           ║"
 echo "  ╚═══════════════════════════════════════════╝"
 echo ""
 
-docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>&1 | grep -v WARN
+docker compose -f docker-compose.yml -f docker-compose.dev.yml ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>&1 | grep -v WARN
 
 echo ""
 echo "💡 ./stop.sh    — Stop all services"

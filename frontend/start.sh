@@ -37,5 +37,12 @@ echo "  📍 http://0.0.0.0:3001"
 echo "═══════════════════════════════════════════════"
 echo ""
 
-# ── Start the dev server ─────────────────────────
-exec npm run dev -- -H 0.0.0.0 -p 3001
+# ── Start server (prod by default, dev if NEXT_DEV=1) ────────────
+if [ "${NEXT_DEV:-0}" = "1" ]; then
+    echo "  🛠  Mode: Development (hot-reload)"
+    exec npm run dev -- -H 0.0.0.0 -p 3001
+else
+    echo "  🚀 Mode: Production"
+    npm run build
+    exec npm run start -- -H 0.0.0.0 -p 3001
+fi
