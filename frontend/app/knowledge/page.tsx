@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, ReactElement } from "react";
 import {
     BookOpen,
     Plus,
@@ -22,7 +22,7 @@ import { knowledgeApi, KnowledgeBase, KBDocument, KBSearchResult } from "@/lib/a
 type Tab = "bases" | "search";
 type IngestMode = "url" | "text" | "file";
 
-const STATUS_ICON: Record<string, JSX.Element> = {
+const STATUS_ICON: Record<string, ReactElement> = {
     ready: <CheckCircle className="w-4 h-4 text-green-500" />,
     processing: <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />,
     pending: <Clock className="w-4 h-4 text-yellow-500" />,

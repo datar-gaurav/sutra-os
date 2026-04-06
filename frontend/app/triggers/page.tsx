@@ -114,7 +114,7 @@ function TriggerModal({
                                 onChange={e => setCron(e.target.value)}
                                 placeholder="0 9 * * 1"
                             />
-                            <p className="text-[10px] text-stone-400 mt-1">Format: minute hour day month weekday (e.g. "0 9 * * 1" = Mon 9am)</p>
+                            <p className="text-[10px] text-stone-400 mt-1">Format: minute hour day month weekday (e.g. &quot;0 9 * * 1&quot; = Mon 9am)</p>
                         </div>
                     )}
 

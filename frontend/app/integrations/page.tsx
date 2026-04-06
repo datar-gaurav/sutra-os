@@ -105,7 +105,7 @@ function ConnectModal({ typeKey, typeMeta, existing, onClose, onSaved }: Connect
                 {typeMeta.oauth && !existing && (
                     <div className="p-6 border-b border-stone-100 bg-stone-50">
                         <p className="text-sm text-stone-600 mb-4">
-                            This integration uses OAuth for secure authentication. You'll be redirected to Google to authorize Sutra.
+                            This integration uses OAuth for secure authentication. You&apos;ll be redirected to Google to authorize Sutra.
                         </p>
                         <a
                             href={`${API_BASE}/api/auth/google/login?agent_id=${agentId}&service=${typeKey === "google_calendar" ? "calendar" : "drive"}`}

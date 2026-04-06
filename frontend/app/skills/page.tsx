@@ -241,7 +241,7 @@ function SkillFormModal({ skill, onClose, onSaved }: { skill: Skill | null; onCl
 
                     <div>
                         <label className="block text-sm font-medium text-stone-700 mb-1">Prompt Fragment *</label>
-                        <p className="text-xs text-stone-400 mb-2">Appended to the agent's system prompt. Use {"{param}"} for config placeholders.</p>
+                        <p className="text-xs text-stone-400 mb-2">Appended to the agent&apos;s system prompt. Use {"{param}"} for config placeholders.</p>
                         <textarea required value={form.prompt_fragment} onChange={e => setForm(f => ({ ...f, prompt_fragment: e.target.value }))}
                             rows={8} className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-stone-600 resize-y"
                             placeholder={"## Skill Name\nYou have been equipped with..."} />
