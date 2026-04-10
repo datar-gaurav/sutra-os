@@ -28,6 +28,10 @@ Sutra is a full-stack platform for building and managing teams of AI agents. Eac
 - **Self-healing** — automatic retries, circuit breakers, and agent watchdog monitoring
 - **Integrations** — Slack, Telegram, WhatsApp, webhooks, MCP servers
 
+## Getting Started Video
+
+[![Getting Started with Sutra](https://img.youtube.com/vi/vYB4Gy4FMmI/maxresdefault.jpg)](https://youtu.be/vYB4Gy4FMmI)
+
 ## Getting Started
 
 ### Option 1: install.sh (Recommended for first-time setup)
