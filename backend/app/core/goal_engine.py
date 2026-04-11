@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import async_session_factory
 from app.models.agent import Agent
 from app.models.checkin import AgentCheckIn
+from app.models.conversation import Conversation, Message
 from app.models.goal import AgentGoal, GoalStatus
 from app.models.initiative import AgentInitiative
 from app.models.task import Task, TaskStatus
@@ -348,18 +349,51 @@ async def fire_trigger(trigger_id: str, payload: dict | None = None) -> dict:
 
     output = ""
     error_msg = None
+    conversation_id = None
     try:
         from app.core.agent_manager import agent_manager
         if not agent_manager.is_running(agent_id):
             await agent_manager.start_agent(agent_config)
 
         from app.core.orchestrator import orchestrator
-        result = await orchestrator.route_message(
-            agent_id=agent_id,
-            message=prompt,
-            chat_history=[],
-        )
-        output = result.get("output", "")
+
+        # Create a conversation so the output is visible in the agent chat UI
+        async with async_session_factory() as db:
+            async with db.begin():
+                conversation = Conversation(
+                    agent_id=agent_id,
+                    title=f"Webhook: {prompt[:80]}",
+                    source="webhook",
+                )
+                db.add(conversation)
+                await db.flush()
+                await db.refresh(conversation)
+                conversation_id = conversation.id
+
+                user_msg = Message(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=prompt,
+                )
+                db.add(user_msg)
+
+            result = await orchestrator.route_message(
+                agent_id=agent_id,
+                message=prompt,
+                chat_history=[],
+                db=db,
+            )
+            output = result.get("output", "")
+
+            async with db.begin():
+                assistant_msg = Message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=output,
+                    tool_calls={"steps": result.get("intermediate_steps", [])} if result.get("intermediate_steps") else None,
+                )
+                db.add(assistant_msg)
+
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Trigger {trigger_id} fire failed: {e}")
@@ -377,4 +411,4 @@ async def fire_trigger(trigger_id: str, payload: dict | None = None) -> dict:
     except Exception as e:
         logger.error(f"Failed to update trigger stats for {trigger_id}: {e}")
 
-    return {"output": output, "error": error_msg}
+    return {"output": output, "error": error_msg, "conversation_id": conversation_id}
