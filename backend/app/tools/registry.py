@@ -518,6 +518,13 @@ TOOL_CATALOG: list[dict] = [
         "is_dangerous": False,
     },
     {
+        "id": "gdrive_save_text",
+        "name": "Google Drive: Save Text",
+        "description": "Save generated text content (LaTeX, markdown, code, etc.) directly to Google Drive without needing a local file.",
+        "category": "integrations",
+        "is_dangerous": False,
+    },
+    {
         "id": "gdrive_upload_file",
         "name": "Google Drive: Upload File",
         "description": "Upload a local file to Google Drive.",

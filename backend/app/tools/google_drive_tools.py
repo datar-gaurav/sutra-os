@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 GOOGLE_DRIVE_TOOL_IDS = {
     "gdrive_search_files",
     "gdrive_read_file",
+    "gdrive_save_text",
     "gdrive_upload_file",
     "gdrive_create_document",
     "gdrive_list_folder",
@@ -191,6 +192,47 @@ def create_google_drive_tools(agent_id: str):
         except Exception as e:
             logger.error("gdrive_read_file error: %s", e)
             return f"Error reading file from Google Drive: {e}"
+
+    @tool
+    async def gdrive_save_text(filename: str, content: str, folder_id: str = "") -> str:
+        """Save a text string directly to Google Drive as a file (no local file needed).
+
+        Use this to save generated content (LaTeX, markdown, plain text, code, etc.)
+        directly to Drive without writing a local file first.
+
+        Args:
+            filename: Name for the file in Google Drive (e.g. "resume.latex").
+            content: The text content to save.
+            folder_id: ID of the destination folder. Defaults to My Drive root.
+        """
+        try:
+            from googleapiclient.http import MediaIoBaseUpload
+            service = await _build_service(agent_id, "drive", "v3")
+
+            mime_type, _ = mimetypes.guess_type(filename)
+            mime_type = mime_type or "text/plain"
+
+            file_metadata: dict = {"name": filename}
+            if folder_id:
+                file_metadata["parents"] = [folder_id]
+
+            buf = BytesIO(content.encode("utf-8"))
+            media = MediaIoBaseUpload(buf, mimetype=mime_type, resumable=False)
+            uploaded = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields="id, name, webViewLink",
+            ).execute()
+
+            return (
+                f"File saved to Google Drive.\n"
+                f"Name: {uploaded['name']}\n"
+                f"ID: {uploaded['id']}\n"
+                f"Link: {uploaded.get('webViewLink', 'N/A')}"
+            )
+        except Exception as e:
+            logger.error("gdrive_save_text error: %s", e)
+            return f"Error saving file to Google Drive: {e}"
 
     @tool
     async def gdrive_upload_file(local_path: str, filename: str = "", folder_id: str = "") -> str:
@@ -369,6 +411,7 @@ def create_google_drive_tools(agent_id: str):
     return [
         gdrive_search_files,
         gdrive_read_file,
+        gdrive_save_text,
         gdrive_upload_file,
         gdrive_create_document,
         gdrive_list_folder,

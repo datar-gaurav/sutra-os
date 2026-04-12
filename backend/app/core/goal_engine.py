@@ -357,7 +357,7 @@ async def fire_trigger(trigger_id: str, payload: dict | None = None) -> dict:
 
         from app.core.orchestrator import orchestrator
 
-        # Create a conversation so the output is visible in the agent chat UI
+        # Phase 2a: Create conversation + user message (own session, committed before LLM call)
         async with async_session_factory() as db:
             async with db.begin():
                 conversation = Conversation(
@@ -376,15 +376,18 @@ async def fire_trigger(trigger_id: str, payload: dict | None = None) -> dict:
                     content=prompt,
                 )
                 db.add(user_msg)
+        # Session closed — transaction committed, no open transaction carried forward
 
-            result = await orchestrator.route_message(
-                agent_id=agent_id,
-                message=prompt,
-                chat_history=[],
-                db=db,
-            )
-            output = result.get("output", "")
+        # Phase 2b: Run LLM (may take seconds/minutes) — no DB session held open
+        result = await orchestrator.route_message(
+            agent_id=agent_id,
+            message=prompt,
+            chat_history=[],
+        )
+        output = result.get("output", "")
 
+        # Phase 2c: Persist assistant reply in a fresh session
+        async with async_session_factory() as db:
             async with db.begin():
                 assistant_msg = Message(
                     conversation_id=conversation_id,

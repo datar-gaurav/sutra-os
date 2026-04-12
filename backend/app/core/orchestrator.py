@@ -249,12 +249,7 @@ class Orchestrator:
                 }
 
             cb = UsageCallbackHandler()
-            config = {"callbacks": [cb]}
-
-            # Apply per-run tool call limit
-            rec_limit = self._get_recursion_limit(agent_id)
-            if rec_limit:
-                config["recursion_limit"] = rec_limit
+            config = {"callbacks": [cb], "recursion_limit": self._get_recursion_limit(agent_id)}
 
             # Check prompt cache for non-streaming requests
             msg_dicts = [{"role": "user" if isinstance(m, HumanMessage) else
@@ -370,6 +365,21 @@ class Orchestrator:
                     "error": True,
                 }
             except Exception as e:
+                # Recursion limit hit — agent kept calling tools without stopping.
+                from langgraph.errors import GraphRecursionError
+                if isinstance(e, GraphRecursionError):
+                    latency_ms = int((time.monotonic() - start_ms) * 1000)
+                    logger.warning(f"Agent {agent_id} hit recursion limit after {latency_ms}ms")
+                    watchdog.heartbeat(agent_id)
+                    return {
+                        "output": (
+                            "I reached my tool-use limit before completing this task. "
+                            "I may have been looping. Please try rephrasing the request or "
+                            "check whether the required tools are functioning correctly."
+                        ),
+                        "error": False,
+                    }
+
                 error_str = str(e).lower()
 
                 # Auto-fallback for retriable LLM errors (rate limit, model not found, etc.)
@@ -491,12 +501,7 @@ class Orchestrator:
                 return
 
             cb = UsageCallbackHandler()
-            config = {"callbacks": [cb]}
-
-            # Apply per-run tool call limit
-            rec_limit = self._get_recursion_limit(agent_id)
-            if rec_limit:
-                config["recursion_limit"] = rec_limit
+            config = {"callbacks": [cb], "recursion_limit": self._get_recursion_limit(agent_id)}
 
             start_ms = time.monotonic()
             full_output = ""
@@ -766,18 +771,19 @@ class Orchestrator:
             logger.warning(f"Token budget check failed for agent {agent_id}: {e}")
             return None
 
-    def _get_recursion_limit(self, agent_id: str) -> int | None:
-        """Return max tool calls per run for the agent, or None for default."""
+    def _get_recursion_limit(self, agent_id: str) -> int:
+        """Return recursion limit for the agent's LangGraph run.
+
+        LangGraph counts all node visits (LLM call + tool execution = 2 steps per cycle).
+        Default cap: 15 tool-call cycles + 1 final response = 31 steps.
+        """
         try:
-            # Read from in-memory agent config to avoid async DB call
             info = agent_manager.get_info(agent_id)
             if info and info.get("max_tool_calls_per_run"):
-                # LangGraph recursion_limit counts all graph steps (tool + LLM);
-                # multiply by 2 to account for LLM steps between tool calls, plus a buffer.
                 return info["max_tool_calls_per_run"] * 2 + 5
         except Exception:
             pass
-        return None
+        return 31  # hard default: up to ~15 tool cycles
 
     async def _save_trace(
         self,
