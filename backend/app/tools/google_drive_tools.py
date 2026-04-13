@@ -24,6 +24,7 @@ GOOGLE_DRIVE_TOOL_IDS = {
     "gdrive_list_folder",
     "gdrive_create_folder",
     "gdrive_move_file",
+    "gdrive_ensure_path",
 }
 
 # Google Workspace MIME types → export format for reading
@@ -408,6 +409,66 @@ def create_google_drive_tools(agent_id: str):
             logger.error("gdrive_move_file error: %s", e)
             return f"Error moving file: {e}"
 
+    @tool
+    async def gdrive_ensure_path(path: str, root_folder_id: str = "") -> str:
+        """Ensure a nested folder path exists in Google Drive, creating folders as needed.
+
+        Given a path like "Career/Google/Software Engineer", this tool navigates from
+        root (or a specified folder) and creates any missing intermediate folders,
+        returning the ID of the deepest (leaf) folder.
+
+        Args:
+            path: Slash-separated folder path, e.g. "Career/Acme Corp/Senior Engineer".
+            root_folder_id: ID of the folder to start from. Defaults to My Drive root.
+        """
+        try:
+            service = await _build_service(agent_id, "drive", "v3")
+            parts = [p.strip() for p in path.split("/") if p.strip()]
+            if not parts:
+                return "Error: path is empty."
+
+            current_parent = root_folder_id or "root"
+            created: list[str] = []
+
+            for part in parts:
+                # Check if this folder already exists under current_parent
+                q = (
+                    f"name = '{part.replace(chr(39), chr(39)+chr(39))}' "
+                    f"and mimeType = 'application/vnd.google-apps.folder' "
+                    f"and '{current_parent}' in parents "
+                    f"and trashed = false"
+                )
+                resp = service.files().list(
+                    q=q, pageSize=1, fields="files(id, name)"
+                ).execute()
+                files = resp.get("files", [])
+
+                if files:
+                    current_parent = files[0]["id"]
+                else:
+                    # Create the missing folder
+                    meta: dict = {
+                        "name": part,
+                        "mimeType": "application/vnd.google-apps.folder",
+                        "parents": [current_parent],
+                    }
+                    folder = service.files().create(
+                        body=meta, fields="id, name"
+                    ).execute()
+                    current_parent = folder["id"]
+                    created.append(part)
+
+            summary = f"Path ready: {path}\nLeaf folder ID: {current_parent}"
+            if created:
+                summary += f"\nCreated new folders: {', '.join(created)}"
+            else:
+                summary += "\nAll folders already existed."
+            return summary
+
+        except Exception as e:
+            logger.error("gdrive_ensure_path error: %s", e)
+            return f"Error ensuring path in Google Drive: {e}"
+
     return [
         gdrive_search_files,
         gdrive_read_file,
@@ -417,4 +478,5 @@ def create_google_drive_tools(agent_id: str):
         gdrive_list_folder,
         gdrive_create_folder,
         gdrive_move_file,
+        gdrive_ensure_path,
     ]

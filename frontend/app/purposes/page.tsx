@@ -11,7 +11,7 @@ import {
     AlertCircle,
     Star,
 } from "lucide-react";
-import { purposesApi, llmsApi, type LLMPurpose, type PurposeStatusResponse } from "@/lib/api";
+import { purposesApi, llmsApi, rateLimitsApi, type LLMPurpose, type PurposeStatusResponse } from "@/lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -120,7 +120,7 @@ const PROVIDERS = [
     { value: "openai_compatible", label: "OpenAI Compatible" },
 ];
 
-async function fetchModelsForProvider(provider: string): Promise<string[]> {
+async function fetchRawModelsForProvider(provider: string): Promise<string[]> {
     switch (provider) {
         case "groq":
             return (await llmsApi.groqModels()).map(m => m.id);
@@ -139,6 +139,26 @@ async function fetchModelsForProvider(provider: string): Promise<string[]> {
         default:
             return [];
     }
+}
+
+async function fetchModelsForProvider(provider: string): Promise<string[]> {
+    const [allModels, usageEntries] = await Promise.all([
+        fetchRawModelsForProvider(provider),
+        rateLimitsApi.usage().catch(() => []),
+    ]);
+
+    // Build a set of models that have exhausted their RPM or RPD limits for this provider
+    const exhausted = new Set<string>();
+    for (const entry of usageEntries) {
+        if (entry.provider !== provider) continue;
+        const rpmExhausted = entry.limits.rpm != null && entry.current.rpm >= entry.limits.rpm;
+        const rpdExhausted = entry.limits.rpd != null && entry.current.rpd >= entry.limits.rpd;
+        if (rpmExhausted || rpdExhausted) {
+            exhausted.add(entry.model);
+        }
+    }
+
+    return allModels.filter(m => !exhausted.has(m));
 }
 
 // ─── Slot Row ────────────────────────────────────────────────────────────────

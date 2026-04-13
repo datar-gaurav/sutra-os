@@ -559,6 +559,13 @@ TOOL_CATALOG: list[dict] = [
         "category": "integrations",
         "is_dangerous": False,
     },
+    {
+        "id": "gdrive_ensure_path",
+        "name": "Google Drive: Ensure Path",
+        "description": "Ensure a nested folder path exists (e.g. 'Career/Google/SWE'), creating any missing folders, and return the leaf folder ID.",
+        "category": "integrations",
+        "is_dangerous": False,
+    },
     # ── Google Calendar ─────────────────────────────────────────────────────────
     {
         "id": "gcal_list_events",

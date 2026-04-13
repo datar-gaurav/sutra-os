@@ -670,6 +670,71 @@ Use these node types when designing workflows:
 - Keep prompts concise and use `{input}` to chain outputs between nodes""",
     },
     {
+        "name": "Resume Tailoring",
+        "description": "Tailors a master resume to a job description, saves LaTeX output to Google Drive, and produces a fit analysis.",
+        "version": "1.0.0",
+        "category": "career",
+        "icon": "FileUser",
+        "color": "#0ea5e9",
+        "required_tool_ids": [
+            "gdrive_search_files",
+            "gdrive_read_file",
+            "gdrive_save_text",
+            "gdrive_list_folder",
+            "gdrive_create_folder",
+            "gdrive_ensure_path",
+            "save_memory",
+            "search_memory",
+        ],
+        "config_schema": {
+            "type": "object",
+            "properties": {
+                "master_resume_filename": {
+                    "type": "string",
+                    "default": "master_resume.tex",
+                    "description": "Filename of the master resume in Google Drive",
+                },
+                "gdrive_root_folder": {
+                    "type": "string",
+                    "default": "Career",
+                    "description": "Root Google Drive folder for tailored resumes",
+                },
+            },
+        },
+        "prompt_fragment": """\
+## Resume Tailoring Skill
+You have been equipped with the Resume Tailoring capability.
+
+Master resume filename: {master_resume_filename}
+Google Drive root folder: {gdrive_root_folder}
+
+### Workflow
+1. **Fetch master resume** — use `gdrive_search_files` to find `{master_resume_filename}`, then `gdrive_read_file` to read it.
+2. **Analyse the job description** — extract:
+   - Required and preferred technical skills
+   - Key responsibilities and action verbs
+   - ATS keywords and domain terms
+   - Seniority signals and cultural values
+3. **Tailor the resume** — rewrite it to maximise match:
+   - Reorder and emphasise bullet points that align with the JD
+   - Mirror exact keywords and phrases (ATS optimisation)
+   - Quantify achievements where possible (numbers, %, scale)
+   - Remove or de-emphasise unrelated experience
+   - Tailor the summary/objective section to this specific role and company
+4. **Output** the tailored resume in LaTeX, preserving the original structure from the master resume (keep all `\\begin{document}`, `\\end{document}`, and package imports intact).
+5. **Save to Google Drive**:
+   - Call `gdrive_ensure_path` with path `"{gdrive_root_folder}/{company}/{role}"` to get the folder ID.
+   - Call `gdrive_save_text` twice: once for `resume.tex` (LaTeX resume), once for `analysis.md` (fit analysis).
+6. **Reply** with:
+   - Google Drive links to both files
+   - Fit score (0–100) and a 3-sentence summary of key changes made
+
+### Rules
+- Never invent experience or credentials. Only rearrange and rephrase what already exists.
+- If the master resume is not found, ask the user to upload it as `{master_resume_filename}`.
+- Use the exact company name and role title from the job data as folder names.""",
+    },
+    {
         "name": "Knowledge Ingestion",
         "description": "Ingests URLs, documents, and text into the knowledge base for future retrieval.",
         "version": "1.0.0",

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sutra Job Capture</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      background: #0f172a;
+      color: #e2e8f0;
+      width: 340px;
+      min-height: 200px;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #1e3a5f 0%, #0f172a 100%);
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid #1e293b;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo {
+      width: 28px;
+      height: 28px;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 14px;
+      color: #fff;
+      flex-shrink: 0;
+    }
+
+    .header h1 { font-size: 14px; font-weight: 600; color: #f1f5f9; }
+    .header p  { font-size: 11px; color: #94a3b8; margin-top: 1px; }
+
+    .body { padding: 14px 16px; }
+
+    .field { margin-bottom: 10px; }
+    .field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: #94a3b8;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .field .value {
+      font-size: 13px;
+      color: #e2e8f0;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 6px 10px;
+      word-break: break-word;
+    }
+    .field .value.placeholder { color: #475569; font-style: italic; }
+
+    .desc-value {
+      max-height: 80px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .settings-row {
+      margin-bottom: 12px;
+    }
+    .settings-row label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: #94a3b8;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .settings-row input {
+      width: 100%;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      color: #e2e8f0;
+      font-size: 12px;
+      padding: 7px 10px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .settings-row input:focus { border-color: #3b82f6; }
+    .settings-row input::placeholder { color: #475569; }
+
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s, background 0.15s;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      color: #fff;
+      margin-top: 4px;
+    }
+    .btn-primary:not(:disabled):hover { opacity: 0.9; }
+
+    .btn-secondary {
+      background: #1e293b;
+      color: #94a3b8;
+      border: 1px solid #334155;
+      font-size: 12px;
+      margin-top: 6px;
+    }
+    .btn-secondary:hover { background: #263548; }
+
+    .status {
+      margin-top: 10px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      display: none;
+    }
+    .status.success { background: #052e16; color: #4ade80; border: 1px solid #166534; display: block; }
+    .status.error   { background: #2d0d0d; color: #f87171; border: 1px solid #7f1d1d; display: block; }
+    .status.info    { background: #0c1a3a; color: #93c5fd; border: 1px solid #1d4ed8; display: block; }
+
+    .divider {
+      height: 1px;
+      background: #1e293b;
+      margin: 12px 0;
+    }
+
+    #view-main, #view-settings { display: none; }
+    #view-main.active, #view-settings.active { display: block; }
+
+    .not-linkedin {
+      padding: 20px 16px;
+      text-align: center;
+      color: #64748b;
+    }
+    .not-linkedin .icon { font-size: 32px; margin-bottom: 8px; }
+    .not-linkedin p { line-height: 1.5; }
+
+    .tag {
+      display: inline-block;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: #1e3a5f;
+      color: #60a5fa;
+      margin-left: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">S</div>
+  <div>
+    <h1>Sutra Job Capture</h1>
+    <p>Send LinkedIn jobs to your Resume Builder</p>
+  </div>
+</div>
+
+<div class="body">
+  <!-- Not on LinkedIn -->
+  <div id="view-not-linkedin">
+    <div class="not-linkedin">
+      <div class="icon">🔍</div>
+      <p>Navigate to a <strong>LinkedIn job listing</strong> page to capture it.</p>
+    </div>
+    <button class="btn btn-secondary" id="btn-open-settings-empty">Configure Webhook URL</button>
+  </div>
+
+  <!-- Main capture view -->
+  <div id="view-main">
+    <div class="field">
+      <label>Role</label>
+      <div class="value" id="field-title">—</div>
+    </div>
+    <div class="field">
+      <label>Company</label>
+      <div class="value" id="field-company">—</div>
+    </div>
+    <div class="field">
+      <label>Location</label>
+      <div class="value" id="field-location">—</div>
+    </div>
+    <div class="field">
+      <label>Salary <span class="tag">if shown</span></label>
+      <div class="value" id="field-salary">—</div>
+    </div>
+    <div class="field">
+      <label>Description preview</label>
+      <div class="value desc-value" id="field-desc">—</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <button class="btn btn-primary" id="btn-send" disabled>
+      Send to Sutra Resume Builder
+    </button>
+    <button class="btn btn-secondary" id="btn-open-settings">Settings</button>
+
+    <div class="status" id="status-msg"></div>
+  </div>
+
+  <!-- Settings view -->
+  <div id="view-settings">
+    <div class="settings-row">
+      <label>Webhook URL</label>
+      <input
+        type="url"
+        id="input-webhook"
+        placeholder="http://localhost:8000/api/public/triggers/webhook/..."
+      />
+    </div>
+    <button class="btn btn-primary" id="btn-save-settings">Save</button>
+    <button class="btn btn-secondary" id="btn-back">Back</button>
+    <div class="status" id="settings-status"></div>
+  </div>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

@@ -502,6 +502,108 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to seed Flux agent: {e}")
 
+    # Seed built-in Resume Builder agent
+    try:
+        import secrets as _secrets
+        from app.db.session import async_session_factory
+        from app.models.agent import Agent
+        from app.models.trigger import AgentTrigger
+        from sqlalchemy import select
+        async with async_session_factory() as db:
+            result = await db.execute(select(Agent).where(Agent.name == "Resume Builder"))
+            existing_resume = result.scalars().first()
+            resume_tools = [
+                "gdrive_search_files",
+                "gdrive_read_file",
+                "gdrive_save_text",
+                "gdrive_list_folder",
+                "gdrive_create_folder",
+                "gdrive_ensure_path",
+                "save_memory",
+                "search_memory",
+            ]
+            resume_prompt = (
+                "You are a professional resume tailoring specialist.\n\n"
+                "You have the Resume Tailoring skill attached. Follow its instructions exactly when you "
+                "receive a job opportunity.\n\n"
+                "Master resume filename: master_resume.tex\n"
+                "Google Drive root folder: Career\n\n"
+                "### Workflow\n"
+                "1. Use gdrive_search_files to find master_resume.tex, then gdrive_read_file to read it.\n"
+                "2. Analyse the job description: extract required/preferred skills, key responsibilities, "
+                "ATS keywords, and seniority signals.\n"
+                "3. Rewrite the resume to maximise match: reorder bullets, mirror JD keywords, quantify "
+                "achievements, tailor the summary section.\n"
+                "4. Output the tailored resume in LaTeX, preserving the original structure.\n"
+                "5. Call gdrive_ensure_path with path 'Career/{company}/{role}' to get the folder ID.\n"
+                "6. Save resume.tex (LaTeX) and analysis.md (fit score 0-100, top 5 strengths, top 3 gaps, "
+                "ATS keywords added) using gdrive_save_text.\n"
+                "7. Reply with Drive links, fit score, and a 3-sentence summary of changes.\n\n"
+                "Rules:\n"
+                "- Never invent experience. Only rearrange and rephrase what exists.\n"
+                "- Keep LaTeX compiling: preserve all package imports and document structure.\n"
+                "- Use exact company and role names from the job data as folder names.\n"
+                "- If master_resume.tex is not found, ask the user to upload it to Google Drive."
+            )
+            webhook_prompt = (
+                "New job opportunity received.\n\n"
+                "Job Details:\n{payload}\n\n"
+                "Please tailor my resume for this role following your instructions. "
+                "Use the job_title and company fields to name the Google Drive folder."
+            )
+            if not existing_resume:
+                resume_agent = Agent(
+                    name="Resume Builder",
+                    description=(
+                        "Tailors your master resume to any job description. "
+                        "Saves LaTeX resume + fit analysis to Google Drive under Career/{Company}/{Role}/."
+                    ),
+                    system_prompt=resume_prompt,
+                    llm_provider="anthropic",
+                    llm_model="claude-sonnet-4-6",
+                    temperature=0.3,
+                    max_tokens=8192,
+                    enabled_tools=resume_tools,
+                    is_active=False,
+                    status="stopped",
+                )
+                db.add(resume_agent)
+                await db.flush()
+                resume_agent_id = resume_agent.id
+            else:
+                existing_resume.description = (
+                    "Tailors your master resume to any job description. "
+                    "Saves LaTeX resume + fit analysis to Google Drive under Career/{Company}/{Role}/."
+                )
+                existing_resume.system_prompt = resume_prompt
+                existing_resume.enabled_tools = resume_tools
+                resume_agent_id = existing_resume.id
+
+            # Create webhook trigger if not present
+            trig_result = await db.execute(
+                select(AgentTrigger).where(
+                    AgentTrigger.agent_id == resume_agent_id,
+                    AgentTrigger.trigger_type == "webhook",
+                )
+            )
+            if not trig_result.scalars().first():
+                db.add(AgentTrigger(
+                    agent_id=resume_agent_id,
+                    name="LinkedIn Job Webhook",
+                    description=(
+                        "Fires when a LinkedIn job is captured via the Chrome extension. "
+                        "Payload: {job_title, company, location, salary, job_description, job_url}"
+                    ),
+                    trigger_type="webhook",
+                    webhook_token=_secrets.token_urlsafe(32),
+                    prompt_template=webhook_prompt,
+                    is_active=True,
+                ))
+            await db.commit()
+        logger.info("✅ Resume Builder agent seeded.")
+    except Exception as e:
+        logger.error(f"Failed to seed Resume Builder agent: {e}")
+
     # Seed default alert rules
     try:
         from app.db.session import async_session_factory
