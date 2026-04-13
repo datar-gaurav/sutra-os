@@ -63,12 +63,14 @@ async function scrapeCurrentTab(tabId) {
   const statusEl = document.getElementById("status-msg");
   const sendBtn  = document.getElementById("btn-send");
 
+  showStatus(statusEl, "Reading job details…", "info");
+
   try {
-    // Inject content script dynamically in case page was opened before extension install
+    // Re-inject content script in case the page loaded before the extension was installed
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ["content.js"],
-    }).catch(() => {}); // ignore if already injected
+    }).catch(() => {});
 
     const response = await chrome.tabs.sendMessage(tabId, { action: "scrapeJob" });
 
@@ -79,7 +81,17 @@ async function scrapeCurrentTab(tabId) {
 
     capturedData = response.data;
     renderJobData(capturedData);
-    sendBtn.disabled = false;
+
+    const missing = ["job_title", "company", "location", "job_description"]
+      .filter((k) => !capturedData[k]);
+
+    if (missing.length === 0) {
+      statusEl.className = "status"; // hide
+    } else {
+      showStatus(statusEl, `Captured — ${missing.join(", ")} not found on page.`, "info");
+    }
+
+    sendBtn.disabled = !(capturedData.job_title || capturedData.job_description);
 
   } catch (err) {
     showStatus(statusEl, `Scrape failed: ${err.message}`, "error");
