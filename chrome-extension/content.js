@@ -163,9 +163,13 @@ function extractDescription() {
 
 function domToText(el) {
   const clone = el.cloneNode(true);
-  // Remove nav, header, button elements that add noise
-  clone.querySelectorAll("nav, header, footer, button, script, style, [aria-hidden='true']")
-    .forEach((n) => n.remove());
+  // Remove nav, header, top-card, buttons, and other non-description noise
+  clone.querySelectorAll(
+    "nav, header, footer, button, script, style, [aria-hidden='true'], " +
+    ".job-details-jobs-unified-top-card, .jobs-unified-top-card, " +
+    ".topcard, [class*='top-card'], [class*='apply-button'], " +
+    ".jobs-apply-button, .jobs-save-button"
+  ).forEach((n) => n.remove());
   clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
   clone.querySelectorAll("li").forEach((li) => {
     li.prepend(document.createTextNode("• "));
