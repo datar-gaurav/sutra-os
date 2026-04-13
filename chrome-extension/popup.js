@@ -133,30 +133,34 @@ async function sendToSutra() {
   sendBtn.disabled = true;
   showStatus(statusEl, "Sending to Sutra…", "info");
 
-  // Delegate the fetch to the background service worker (avoids CORS issues)
-  chrome.runtime.sendMessage(
-    { action: "sendWebhook", webhookUrl, payload: capturedData },
-    (response) => {
-      if (chrome.runtime.lastError) {
-        showStatus(statusEl, `Extension error: ${chrome.runtime.lastError.message}`, "error");
-        sendBtn.disabled = false;
-        return;
-      }
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(capturedData),
+    });
 
-      if (response && response.ok) {
-        showStatus(
-          statusEl,
-          `Sent! Resume Builder is tailoring your resume for ${capturedData.company || "this role"}.`,
-          "success"
-        );
-        // Keep button disabled to prevent double-send
-      } else {
-        const detail = response ? `HTTP ${response.status}: ${response.body}` : "No response";
-        showStatus(statusEl, `Failed to send: ${detail}`, "error");
-        sendBtn.disabled = false;
-      }
+    const body = await res.text().catch(() => "");
+
+    if (res.ok) {
+      showStatus(
+        statusEl,
+        `Sent! Resume Builder is tailoring your resume for ${capturedData.company || "this role"}.`,
+        "success"
+      );
+    } else {
+      showStatus(statusEl, `Server error ${res.status}: ${body.slice(0, 120)}`, "error");
+      sendBtn.disabled = false;
     }
-  );
+  } catch (err) {
+    // Provide actionable guidance based on the error
+    let msg = `Network error: ${err.message}.`;
+    if (/fetch|network|failed/i.test(err.message)) {
+      msg += " Is the Sutra backend running and the webhook URL correct?";
+    }
+    showStatus(statusEl, msg, "error");
+    sendBtn.disabled = false;
+  }
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
