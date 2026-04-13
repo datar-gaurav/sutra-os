@@ -43,6 +43,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-open-settings").addEventListener("click", () => showView("view-settings"));
   document.getElementById("btn-open-settings-empty").addEventListener("click", () => showView("view-settings"));
   document.getElementById("btn-send").addEventListener("click", sendToSutra);
+  document.getElementById("btn-retry").addEventListener("click", async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab) await scrapeCurrentTab(tab.id);
+  });
 
   // Detect active tab
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

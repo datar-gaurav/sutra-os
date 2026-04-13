@@ -1,212 +1,253 @@
 /**
  * Sutra Job Capture — LinkedIn content script
  *
- * Extracts job details from LinkedIn job pages. LinkedIn is a React SPA so
- * content loads asynchronously after navigation. The scraper retries for up to
- * 3 seconds before giving up, and uses multiple selector strategies plus
- * document.title parsing as a reliable fallback for title and company.
+ * LinkedIn is a React SPA with frequent DOM changes. This script uses a
+ * layered approach: specific selectors → document.title parsing → structural
+ * heuristics. Retries for up to 4s to handle SPA lazy-loading.
  */
 
 "use strict";
 
-// ── Selector lists (tried in order, first non-empty text wins) ─────────────
+// ── Title ─────────────────────────────────────────────────────────────────────
 
-const TITLE_SELECTORS = [
-  ".job-details-jobs-unified-top-card__job-title h1",
-  ".job-details-jobs-unified-top-card__job-title",
-  ".jobs-unified-top-card__job-title h1",
-  ".jobs-unified-top-card__job-title",
-  ".topcard__title",
-  ".jobs-details-top-card__job-title",
-  "h1.t-24",
-  "h1",
-];
-
-const COMPANY_SELECTORS = [
-  ".job-details-jobs-unified-top-card__company-name a",
-  ".job-details-jobs-unified-top-card__company-name",
-  ".jobs-unified-top-card__company-name a",
-  ".jobs-unified-top-card__company-name",
-  ".topcard__org-name-link",
-  ".topcard__org-name-link--black-link",
-  ".jobs-details-top-card__company-url",
-  "[data-tracking-control-name='public_jobs_topcard-org-name']",
-];
-
-const LOCATION_SELECTORS = [
-  ".job-details-jobs-unified-top-card__primary-description-container .tvm__text",
-  ".job-details-jobs-unified-top-card__bullet",
-  ".jobs-unified-top-card__bullet",
-  ".topcard__flavor--bullet",
-  ".jobs-unified-top-card__workplace-type",
-  ".job-details-jobs-unified-top-card__workplace-type",
-];
-
-const DESCRIPTION_SELECTORS = [
-  "#job-details",
-  ".jobs-description__content",
-  ".jobs-description-content__text",
-  ".description__text",
-  ".jobs-box__html-content",
-  "[data-test-id='job-description']",
-];
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function trySelectors(selectors) {
+function extractTitle() {
+  // Specific selectors first — avoid containers that include company name
+  const selectors = [
+    ".job-details-jobs-unified-top-card__job-title h1",
+    ".jobs-unified-top-card__job-title h1",
+    ".topcard__title",
+    ".job-details-jobs-unified-top-card__job-title",
+    ".jobs-unified-top-card__job-title",
+    "h1.t-24",
+  ];
   for (const sel of selectors) {
-    try {
-      const el = document.querySelector(sel);
-      if (el) {
-        const text = el.innerText || el.textContent || "";
-        if (text.trim()) return text.trim();
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = (el.innerText || el.textContent || "").trim();
+      if (text) return text;
+    }
+  }
+
+  // Fallback: document.title is "Role at Company | LinkedIn" or "Role - Company | LinkedIn"
+  const parsed = parseFromDocTitle();
+  return parsed.title;
+}
+
+// ── Company ───────────────────────────────────────────────────────────────────
+
+function extractCompany() {
+  // Best signal: a link whose href contains /company/
+  for (const a of document.querySelectorAll("a[href*='/company/']")) {
+    const text = (a.innerText || a.textContent || "").trim();
+    if (text && text.length < 80) return text;
+  }
+
+  const selectors = [
+    ".job-details-jobs-unified-top-card__company-name a",
+    ".job-details-jobs-unified-top-card__company-name",
+    ".jobs-unified-top-card__company-name a",
+    ".jobs-unified-top-card__company-name",
+    ".topcard__org-name-link",
+    ".jobs-details-top-card__company-url",
+  ];
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = (el.innerText || el.textContent || "").trim();
+      if (text) return text;
+    }
+  }
+
+  // Last resort: title parsing
+  const parsed = parseFromDocTitle();
+  return parsed.company;
+}
+
+// ── Location ──────────────────────────────────────────────────────────────────
+
+function extractLocation() {
+  const selectors = [
+    ".job-details-jobs-unified-top-card__primary-description-container .tvm__text",
+    ".jobs-unified-top-card__bullet",
+    ".job-details-jobs-unified-top-card__bullet",
+    ".topcard__flavor--bullet",
+    ".jobs-unified-top-card__workplace-type",
+    "[data-test-id='job-card-location']",
+  ];
+  for (const sel of selectors) {
+    // Some of these selectors match multiple elements; take the first short one
+    for (const el of document.querySelectorAll(sel)) {
+      const text = (el.innerText || el.textContent || "").trim();
+      // Location strings are short; skip salary / workplace chips
+      if (text && text.length < 100 && !/\$|per\s+(year|hour)/i.test(text)) {
+        return text.split(/\n/)[0].trim();
       }
-    } catch (_) {}
+    }
   }
   return "";
 }
 
-/**
- * Parse title and company from the browser tab title as a fallback.
- * LinkedIn sets: "Job Title at Company | LinkedIn" or "Job Title - Company | LinkedIn"
- */
-function parseFromDocTitle() {
-  const raw = document.title.replace(/\s*\|\s*LinkedIn\s*$/i, "").trim();
-  const atMatch = raw.match(/^(.+?)\s+at\s+(.+)$/i);
-  if (atMatch) return { title: atMatch[1].trim(), company: atMatch[2].trim() };
-  const dashMatch = raw.match(/^(.+?)\s+[-–]\s+(.+)$/);
-  if (dashMatch) return { title: dashMatch[1].trim(), company: dashMatch[2].trim() };
-  return { title: raw, company: "" };
-}
+// ── Salary ────────────────────────────────────────────────────────────────────
 
 function extractSalary() {
-  // Structured salary insight chips
+  const salaryRe = /[$£€¥₹][\d,]+|[\d,]+[kK]\s*(\/\s*(yr|year|hour|hr))?|per\s+(year|hour|month)/i;
+
   const chipSelectors = [
     ".job-details-jobs-unified-top-card__job-insight",
     ".jobs-unified-top-card__job-insight",
     ".job-details-preferences-and-skills__pill",
     ".job-details-jobs-unified-top-card__job-insight-view-model-secondary",
+    ".compensation__salary",
     "[aria-label*='salary' i]",
-    "[aria-label*='compensation' i]",
   ];
   for (const sel of chipSelectors) {
     for (const el of document.querySelectorAll(sel)) {
-      const text = el.innerText || el.textContent || "";
-      if (/[$£€¥₹]|per\s+(year|hour|month|annum)|k\/yr|salary|\bK\b/i.test(text)) {
-        return text.replace(/\s+/g, " ").trim().slice(0, 150);
-      }
+      const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+      if (salaryRe.test(text) && text.length < 200) return text;
     }
   }
-  // Walk text nodes for salary patterns
-  const salaryRe = /\$[\d,]+(?:\s*[kK])?\s*(?:[-–]\s*\$[\d,]+(?:\s*[kK])?)?(?:\s*\/\s*(?:yr|year|hour|hr))?/;
+
+  // Text-node scan
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const strongRe = /[$£€][\d,]+(?:\s*[kK])?\s*[-–—]\s*[$£€][\d,]+/;
   let node;
   while ((node = walker.nextNode())) {
     const t = node.textContent.trim();
-    if (salaryRe.test(t) && t.length < 200) return t;
+    if (strongRe.test(t) && t.length < 200) return t;
   }
   return "";
 }
+
+// ── Description ───────────────────────────────────────────────────────────────
 
 function extractDescription() {
-  for (const sel of DESCRIPTION_SELECTORS) {
-    try {
-      const el = document.querySelector(sel);
-      if (!el) continue;
-      const clone = el.cloneNode(true);
-      // Preserve structure as readable text
-      clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
-      clone.querySelectorAll("li").forEach((li) => {
-        li.prepend(document.createTextNode("• "));
-        li.append(document.createTextNode("\n"));
-      });
-      clone.querySelectorAll("p, div, h1, h2, h3, h4, h5").forEach((b) =>
-        b.append(document.createTextNode("\n"))
-      );
-      const text = (clone.innerText || clone.textContent || "")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
-      if (text.length > 80) return text;
-    } catch (_) {}
+  // Try known containers
+  const selectors = [
+    "#job-details",
+    ".jobs-description__content",
+    ".jobs-description-content__text",
+    ".jobs-description",
+    ".description__text",
+    ".jobs-box__html-content",
+    "[data-test-id='job-description']",
+    ".job-view-layout",
+  ];
+
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    const text = domToText(el);
+    if (text.length > 100) return text;
   }
+
+  // Structural heuristic: find the <section> or <div> that contains the
+  // most text and looks like a job description (has bullet points or paragraphs)
+  let best = "";
+  for (const el of document.querySelectorAll("section, article, [class*='description'], [class*='details']")) {
+    const text = domToText(el);
+    if (text.length > best.length && text.length > 200) {
+      best = text;
+    }
+  }
+  if (best) return best;
+
+  // Nuclear fallback: grab everything inside <main>
+  const main = document.querySelector("main");
+  if (main) {
+    const text = domToText(main);
+    if (text.length > 100) return text.slice(0, 8000);
+  }
+
   return "";
 }
 
-function extractLocation() {
-  const raw = trySelectors(LOCATION_SELECTORS);
-  if (raw) {
-    // Strip salary/workplace-type noise that sometimes bleeds into the location chip
-    return raw.split(/\n|\|/)[0].trim();
+function domToText(el) {
+  const clone = el.cloneNode(true);
+  // Remove nav, header, button elements that add noise
+  clone.querySelectorAll("nav, header, footer, button, script, style, [aria-hidden='true']")
+    .forEach((n) => n.remove());
+  clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+  clone.querySelectorAll("li").forEach((li) => {
+    li.prepend(document.createTextNode("• "));
+    li.append(document.createTextNode("\n"));
+  });
+  clone.querySelectorAll("p, div, h1, h2, h3, h4, h5, section").forEach((b) =>
+    b.append(document.createTextNode("\n"))
+  );
+  return (clone.innerText || clone.textContent || "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// ── document.title parser ─────────────────────────────────────────────────────
+
+function parseFromDocTitle() {
+  // Strip trailing "| LinkedIn" or "- LinkedIn"
+  let raw = document.title
+    .replace(/\s*[|–-]\s*LinkedIn\s*$/i, "")
+    .trim();
+
+  // "Role at Company"
+  const atIdx = raw.search(/\bat\b/i);
+  if (atIdx > 0) {
+    return {
+      title:   raw.slice(0, atIdx).trim(),
+      company: raw.slice(atIdx + 3).trim(),
+    };
   }
-  return "";
+
+  // "Role - Company" or "Role | Company" (last separator wins for company)
+  const sepMatch = raw.match(/^(.+?)(?:\s[-–|]\s|\s[-–|])(.+)$/);
+  if (sepMatch) {
+    return { title: sepMatch[1].trim(), company: sepMatch[2].trim() };
+  }
+
+  return { title: raw, company: "" };
 }
 
 // ── Main scrape ────────────────────────────────────────────────────────────────
 
 function scrapeJob() {
-  let jobTitle = trySelectors(TITLE_SELECTORS);
-  let company  = trySelectors(COMPANY_SELECTORS);
-
-  // Reliable fallback: parse from document.title
-  if (!jobTitle || !company) {
-    const parsed = parseFromDocTitle();
-    if (!jobTitle) jobTitle = parsed.title;
-    if (!company)  company  = parsed.company;
-  }
-
   return {
-    job_title:        jobTitle,
-    company:          company,
-    location:         extractLocation(),
-    salary:           extractSalary(),
-    job_description:  extractDescription(),
-    job_url:          window.location.href.split("?")[0],
-    source:           "linkedin",
-    captured_at:      new Date().toISOString(),
+    job_title:       extractTitle(),
+    company:         extractCompany(),
+    location:        extractLocation(),
+    salary:          extractSalary(),
+    job_description: extractDescription(),
+    job_url:         window.location.href.split("?")[0],
+    source:          "linkedin",
+    captured_at:     new Date().toISOString(),
   };
 }
 
-/** Returns true if we have at least a title or description — worth sending. */
-function hasUsefulData(data) {
-  return !!(data.job_title || data.job_description);
+function dataQuality(d) {
+  return [d.job_title, d.company, d.location, d.job_description]
+    .filter(Boolean).length;
 }
 
-// ── Retry wrapper: LinkedIn SPA loads content asynchronously ──────────────────
+// ── Retry (SPA lazy-load) ─────────────────────────────────────────────────────
 
-async function scrapeWithRetry(maxWaitMs = 3000, intervalMs = 300) {
-  const deadline = Date.now() + maxWaitMs;
+async function scrapeWithRetry(maxWaitMs = 4000, intervalMs = 400) {
   let best = scrapeJob();
-  if (hasUsefulData(best)) return best;
+  if (dataQuality(best) === 4) return best;
 
+  const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, intervalMs));
     const attempt = scrapeJob();
-    // Keep whichever attempt has more data
-    if (
-      (attempt.job_title && !best.job_title) ||
-      (attempt.job_description && !best.job_description) ||
-      (attempt.company && !best.company)
-    ) {
-      best = attempt;
-    }
-    if (
-      best.job_title &&
-      best.company &&
-      best.job_description
-    ) {
-      break; // good enough
-    }
+    if (dataQuality(attempt) > dataQuality(best)) best = attempt;
+    if (dataQuality(best) === 4) break;
   }
   return best;
 }
 
-// ── Message listener ───────────────────────────────────────────────────────────
+// ── Message listener ──────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.action === "scrapeJob") {
     scrapeWithRetry()
       .then((data) => sendResponse({ success: true, data }))
-      .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true; // keep channel open for async response
+      .catch((err)  => sendResponse({ success: false, error: err.message }));
+    return true;
   }
 });
