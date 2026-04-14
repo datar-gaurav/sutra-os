@@ -8,7 +8,7 @@ import {
     Menu, CalendarClock, Blocks, Brain, ScrollText, LogOut, KanbanSquare,
     MessagesSquare, ShieldCheck, Network, Target, DollarSign, BookOpen,
     Package, Mail, Webhook, BarChart3, ChevronDown, ChevronRight, Pencil, Sparkles, Link2, Hammer, TrendingUp,
-    ExternalLink, HardDrive, Layers, Dna, Bell, FolderKanban, Gauge, ArrowUp, ArrowDown,
+    ExternalLink, HardDrive, Layers, Dna, Bell, FolderKanban, Gauge, ArrowUp, ArrowDown, Briefcase,
 } from "lucide-react";
 import { authStorage } from "@/lib/auth";
 import { authApi, approvalsApi, alertsApi } from "@/lib/api";
@@ -92,6 +92,7 @@ const NAV_GROUPS: NavGroup[] = [
         defaultName: "Intelligence",
         items: [
             { href: "/social-pulse", label: "Social Pulse", icon: TrendingUp, openInNewWindow: true },
+            { href: "/job-applications", label: "Job Applications", icon: Briefcase, openInNewWindow: true },
             { href: "/knowledge", label: "Knowledge", icon: BookOpen },
             { href: "/memory", label: "Memory", icon: Brain },
         ],

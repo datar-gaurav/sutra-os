@@ -209,6 +209,99 @@ function parseFromDocTitle() {
   return { title: raw, company: "" };
 }
 
+// ── Hiring team / reachable people ─────────────────────────────────────────────
+
+function extractPeople() {
+  const out = [];
+  const seen = new Set();
+
+  // Find candidate section containers: "Meet the hiring team", "People you can
+  // reach out to", "Your connections", etc. We probe by heading text, then
+  // collect <a href="/in/..."> anchors within the same card.
+  const headingRe = /meet the hiring team|hiring team|people you can reach|your connections|connections that work here|who.*can help/i;
+
+  const roots = new Set();
+
+  // 1. Heading-based discovery
+  const headingEls = document.querySelectorAll("h2, h3, h4, [class*='hiring'], [class*='people'], [class*='hirer']");
+  for (const h of headingEls) {
+    const t = (h.innerText || h.textContent || "").trim();
+    if (headingRe.test(t)) {
+      // Walk up to the nearest section/card container
+      let node = h;
+      for (let i = 0; i < 6 && node; i++) {
+        if (node.matches && node.matches("section, article, [class*='card'], [class*='module'], [class*='section']")) {
+          roots.add(node);
+          break;
+        }
+        node = node.parentElement;
+      }
+      if (node) roots.add(node);
+    }
+  }
+
+  // 2. Known selectors (structure changes frequently; we try a broad set)
+  const directSelectors = [
+    ".hirer-card",
+    ".job-details-people-who-can-help__section",
+    ".job-details-connections-card",
+    ".jobs-poster",
+    "[class*='hirer-card']",
+    "[class*='people-who-can-help']",
+  ];
+  for (const sel of directSelectors) {
+    document.querySelectorAll(sel).forEach((el) => roots.add(el));
+  }
+
+  // Role inference from the nearest heading
+  function inferRole(container) {
+    const heading = container.querySelector("h2, h3, h4");
+    const t = (heading?.innerText || heading?.textContent || "").toLowerCase();
+    if (/hiring/.test(t)) return "hiring_manager";
+    if (/reach|connection|can help/.test(t)) return "connection";
+    return "poster";
+  }
+
+  for (const root of roots) {
+    const role = inferRole(root);
+    const anchors = root.querySelectorAll("a[href*='/in/']");
+    for (const a of anchors) {
+      const href = a.href.split("?")[0];
+      if (seen.has(href)) continue;
+
+      // Name: prefer aria-label, then inner text (stripping "View X's profile")
+      let name = (a.getAttribute("aria-label") || "").replace(/^view\s+/i, "").replace(/['’]s\s+profile.*$/i, "").trim();
+      if (!name) {
+        name = (a.innerText || a.textContent || "").replace(/\s+/g, " ").trim();
+      }
+      if (!name || name.length > 120) continue;
+
+      // Title: look for sibling or nested text with title-ish signal
+      let title = "";
+      const card = a.closest("[class*='card'], li, div");
+      if (card) {
+        const candidates = card.querySelectorAll(
+          ".hirer-card__hirer-job-title, [class*='job-title'], [class*='subtitle'], [class*='description']"
+        );
+        for (const c of candidates) {
+          const text = (c.innerText || c.textContent || "").trim();
+          if (text && text !== name && text.length < 200) {
+            title = text.split("\n")[0].trim();
+            break;
+          }
+        }
+      }
+
+      seen.add(href);
+      out.push({ name, title, profile_url: href, role });
+      if (out.length >= 10) break;
+    }
+    if (out.length >= 10) break;
+  }
+
+  return out;
+}
+
 // ── Main scrape ────────────────────────────────────────────────────────────────
 
 function scrapeJob() {
@@ -218,6 +311,7 @@ function scrapeJob() {
     location:        extractLocation(),
     salary:          extractSalary(),
     job_description: extractDescription(),
+    people:          extractPeople(),
     job_url:         window.location.href.split("?")[0],
     source:          "linkedin",
     captured_at:     new Date().toISOString(),

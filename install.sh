@@ -177,6 +177,24 @@ echo ""
 [ $ELAPSED -lt $MAX_WAIT ] && ok "Backend is healthy"
 
 echo ""
+
+# ── 7. Seed Resume Builder + Critic agents ───────
+
+if [ $ELAPSED -lt $MAX_WAIT ]; then
+    info "Seeding Resume Builder + Critic agents..."
+    if $COMPOSE_CMD exec -T backend python -m scripts.seed_resume_agent; then
+        ok "Resume Builder seeded"
+    else
+        warn "Resume Builder seed failed — run manually: $COMPOSE_CMD exec backend python -m scripts.seed_resume_agent"
+    fi
+    if $COMPOSE_CMD exec -T backend python -m scripts.seed_resume_critic; then
+        ok "Resume Critic(s) seeded"
+    else
+        warn "Resume Critic seed failed — run manually: $COMPOSE_CMD exec backend python -m scripts.seed_resume_critic"
+    fi
+    echo ""
+fi
+
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════╗${RESET}"
 echo -e "${GREEN}${BOLD}║        Sutra OS is ready!                ║${RESET}"
 echo -e "${GREEN}${BOLD}╠══════════════════════════════════════════╣${RESET}"

@@ -32,6 +32,7 @@ from app.api.routes import projects as projects_routes
 from app.api.routes import env_vars as env_vars_routes
 from app.api.routes import rate_limits as rate_limits_routes
 from app.api.routes import purposes as purposes_routes
+from app.api.routes import job_applications as job_applications_routes
 from app.api.websocket import websocket_endpoint
 from app.config import settings
 from app.core.logging_config import configure_logging
@@ -80,6 +81,7 @@ import app.models.env_var  # ensure EnvVar table is registered  # noqa: F401
 import app.models.rate_limit  # ensure ModelRateLimit table is registered  # noqa: F401
 import app.models.llm_purpose  # ensure LLMPurpose table is registered  # noqa: F401
 import app.models.error_log  # ensure ErrorLog table is registered  # noqa: F401
+import app.models.job_application  # ensure JobApplication table is registered  # noqa: F401
 from app.core.scheduler import start_scheduler, scheduler
 
 configure_logging(debug=settings.debug)
@@ -521,6 +523,7 @@ async def lifespan(app: FastAPI):
                 "gdrive_ensure_path",
                 "save_memory",
                 "search_memory",
+                "update_job_application",
             ]
             resume_prompt = (
                 "You are a professional resume tailoring specialist.\n\n"
@@ -537,8 +540,11 @@ async def lifespan(app: FastAPI):
                 "4. Output the tailored resume in LaTeX, preserving the original structure.\n"
                 "5. Call gdrive_ensure_path with path 'Career/{company}/{role}' to get the folder ID.\n"
                 "6. Save resume.tex (LaTeX) and analysis.md (fit score 0-100, top 5 strengths, top 3 gaps, "
-                "ATS keywords added) using gdrive_save_text.\n"
-                "7. Reply with Drive links, fit score, and a 3-sentence summary of changes.\n\n"
+                "ATS keywords added) using gdrive_save_text. Capture the returned file URLs and IDs.\n"
+                "7. If the incoming payload includes an `application_id`, call update_job_application "
+                "with that id, the resume Drive URL + file ID, analysis Drive URL, fit_score, and "
+                "status='resume_generated' so the Job Applications dashboard is linked to the artifacts.\n"
+                "8. Reply with Drive links, fit score, and a 3-sentence summary of changes.\n\n"
                 "Rules:\n"
                 "- Never invent experience. Only rearrange and rephrase what exists.\n"
                 "- Keep LaTeX compiling: preserve all package imports and document structure.\n"
@@ -549,7 +555,9 @@ async def lifespan(app: FastAPI):
                 "New job opportunity received.\n\n"
                 "Job Details:\n{payload}\n\n"
                 "Please tailor my resume for this role following your instructions. "
-                "Use the job_title and company fields to name the Google Drive folder."
+                "Use the job_title and company fields to name the Google Drive folder. "
+                "If `application_id` is present in the payload, call update_job_application "
+                "at the end so the dashboard is linked to the generated artifacts."
             )
             if not existing_resume:
                 resume_agent = Agent(
@@ -586,19 +594,24 @@ async def lifespan(app: FastAPI):
                     AgentTrigger.trigger_type == "webhook",
                 )
             )
-            if not trig_result.scalars().first():
+            existing_trigger = trig_result.scalars().first()
+            if not existing_trigger:
                 db.add(AgentTrigger(
                     agent_id=resume_agent_id,
                     name="LinkedIn Job Webhook",
                     description=(
                         "Fires when a LinkedIn job is captured via the Chrome extension. "
-                        "Payload: {job_title, company, location, salary, job_description, job_url}"
+                        "Payload: {job_title, company, location, salary, job_description, job_url, application_id}"
                     ),
                     trigger_type="webhook",
                     webhook_token=_secrets.token_urlsafe(32),
                     prompt_template=webhook_prompt,
                     is_active=True,
                 ))
+            else:
+                # Keep prompt template + name in sync so existing installs pick up application_id wiring
+                existing_trigger.name = "LinkedIn Job Webhook"
+                existing_trigger.prompt_template = webhook_prompt
             await db.commit()
         logger.info("✅ Resume Builder agent seeded.")
     except Exception as e:
@@ -893,6 +906,8 @@ app.include_router(projects_routes.router, prefix="/api", dependencies=_auth_dep
 app.include_router(env_vars_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(rate_limits_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(purposes_routes.router, prefix="/api", dependencies=_auth_dep)
+app.include_router(job_applications_routes.router, prefix="/api", dependencies=_auth_dep)
+app.include_router(job_applications_routes.public_router, prefix="/api/public")
 # Public webhook endpoint — token-protected, no JWT required
 from app.api.routes.triggers import public_router as triggers_public_router
 app.include_router(triggers_public_router, prefix="/api/public")

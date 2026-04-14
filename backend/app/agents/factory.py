@@ -30,6 +30,29 @@ def _build_simple_chain(llm, system_prompt: str):
     return RunnableLambda(_run)
 
 
+class _PurposeOnlyPlaceholder:
+    """Sentinel executor for purpose-based agents that have no static LLM.
+
+    The orchestrator's _resolve_executor_for_request will rebuild a real
+    executor per-request via smart routing. This placeholder just needs to
+    exist so agent_manager registration succeeds and is_running() is true.
+    Any direct invocation is an error.
+    """
+
+    def __init__(self, agent_config: dict):
+        self.agent_config = agent_config
+
+    async def ainvoke(self, *_a, **_kw):
+        raise RuntimeError(
+            "Purpose-only agent has no static executor; use orchestrator."
+        )
+
+    def astream_events(self, *_a, **_kw):
+        raise RuntimeError(
+            "Purpose-only agent has no static executor; use orchestrator."
+        )
+
+
 def build_agent(agent_config: dict[str, Any], llm=None, actual_provider: str | None = None):
     """Build a LangChain agent graph from an agent config dict.
 
@@ -47,14 +70,27 @@ def build_agent(agent_config: dict[str, Any], llm=None, actual_provider: str | N
     effective_provider = actual_provider or agent_config.get("llm_provider", "")
 
     if llm is None:
-        # Legacy path: build LLM from agent config (no purpose-based routing)
-        llm = llm_registry.get_chat_model(
-            provider=agent_config["llm_provider"],
-            model=agent_config["llm_model"],
-            temperature=agent_config.get("temperature", 0.7),
-            max_tokens=agent_config.get("max_tokens", 4096),
-            streaming=True,
-        )
+        # Legacy path: build LLM from agent config (no purpose-based routing).
+        # If the agent has a purpose_id, the real LLM is resolved per-request
+        # via smart routing — a missing static key here is not fatal, but we
+        # still need a placeholder LLM so the executor can be constructed.
+        has_purpose = bool(agent_config.get("purpose_id"))
+        try:
+            llm = llm_registry.get_chat_model(
+                provider=agent_config["llm_provider"],
+                model=agent_config["llm_model"],
+                temperature=agent_config.get("temperature", 0.7),
+                max_tokens=agent_config.get("max_tokens", 4096),
+                streaming=True,
+            )
+        except Exception as e:
+            if not has_purpose:
+                raise
+            logger.info(
+                f"Static provider unavailable ({e}); purpose-based agent will "
+                f"resolve a model per-request."
+            )
+            llm = None
 
         # Configure fallbacks if present
         fallbacks = []
@@ -107,6 +143,15 @@ def build_agent(agent_config: dict[str, Any], llm=None, actual_provider: str | N
         final_prompt = base_prompt + "\n\n" + "\n\n".join(interpolated)
     else:
         final_prompt = base_prompt
+
+    # Purpose-based agent with no static LLM available — the orchestrator will
+    # build the real executor per-request via smart routing. Return a sentinel
+    # so registration still succeeds.
+    if llm is None:
+        logger.info(
+            "build_agent: no static LLM (purpose-based); returning lazy placeholder."
+        )
+        return _PurposeOnlyPlaceholder(agent_config)
 
     # If the provider doesn't support tool calling, use a simple chain that skips bind_tools
     if not llm_registry.provider_supports_tools(effective_provider):

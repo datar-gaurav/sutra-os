@@ -233,6 +233,19 @@ MIGRATIONS: list[tuple[str, str]] = [
         "agents.purpose_id",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS purpose_id VARCHAR(36)",
     ),
+    # ── Job applications: hiring team / reachable connections ────────────
+    (
+        "job_applications.people",
+        "ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS people JSONB",
+    ),
+    (
+        "job_applications.review_rounds",
+        "ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS review_rounds INTEGER NOT NULL DEFAULT 2",
+    ),
+    (
+        "job_applications.review_log",
+        "ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS review_log JSONB",
+    ),
 ]
 
 

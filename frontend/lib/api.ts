@@ -2149,6 +2149,99 @@ export const socialPulseApi = {
 };
 
 
+// ─── Job Applications ─────────────────────────────────────────────────────────
+
+export const JOB_APP_STATUSES = [
+    "captured",
+    "resume_generated",
+    "applied",
+    "interviewing",
+    "offer",
+    "rejected",
+    "archived",
+] as const;
+
+export type JobAppStatus = (typeof JOB_APP_STATUSES)[number];
+
+export interface JobApplicationPerson {
+    name: string;
+    title: string | null;
+    profile_url: string;
+    role: "hiring_manager" | "connection" | "poster" | string;
+}
+
+export interface JobApplication {
+    id: string;
+    job_title: string;
+    company: string | null;
+    location: string | null;
+    salary: string | null;
+    job_description: string | null;
+    job_url: string | null;
+    source: string;
+    status: JobAppStatus;
+    notes: string | null;
+    tags: string[];
+    resume_drive_url: string | null;
+    resume_drive_file_id: string | null;
+    analysis_drive_url: string | null;
+    fit_score: number | null;
+    review_rounds: number;
+    review_log: JobApplicationReviewEntry[] | null;
+    people: JobApplicationPerson[] | null;
+    applied_at: string | null;
+    last_status_change_at: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface JobApplicationReviewEntry {
+    round: number;
+    role: "builder" | "critic";
+    agent: string;
+    content: unknown; // string (builder) or structured JSON (critic)
+    ts: string;
+}
+
+export interface JobApplicationStats {
+    total: number;
+    this_week: number;
+    by_status: Record<string, number>;
+    top_companies: { company: string; count: number }[];
+    daily: { day: string; count: number }[];
+    response_rate: number;
+}
+
+export const jobApplicationsApi = {
+    list: (params?: { status?: string; company?: string; search?: string; since_days?: number }) => {
+        const qs = new URLSearchParams();
+        if (params?.status) qs.set("status", params.status);
+        if (params?.company) qs.set("company", params.company);
+        if (params?.search) qs.set("search", params.search);
+        if (params?.since_days) qs.set("since_days", String(params.since_days));
+        return apiFetch<JobApplication[]>(`/api/job-applications/?${qs.toString()}`);
+    },
+    get: (id: string) => apiFetch<JobApplication>(`/api/job-applications/${id}`),
+    update: (id: string, data: Partial<JobApplication>) =>
+        apiFetch<JobApplication>(`/api/job-applications/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(data),
+        }),
+    delete: (id: string) =>
+        apiFetch<void>(`/api/job-applications/${id}`, { method: "DELETE" }),
+    stats: () => apiFetch<JobApplicationStats>(`/api/job-applications/stats`),
+    /** Open an SSE stream of review-loop log entries. Caller owns cleanup. */
+    reviewStream: (id: string): EventSource =>
+        new EventSource(`${API_BASE}/api/job-applications/${id}/review-stream`),
+    /** Rerun the build → critic → revise loop. Pass reset=true to wipe prior state. */
+    retryReview: (id: string, reset = false) =>
+        apiFetch<{ status: string; application_id: string; reset: boolean }>(
+            `/api/job-applications/${id}/retry-review?reset=${reset}`,
+            { method: "POST" },
+        ),
+};
+
+
 // ─── Google Drive ─────────────────────────────────────────────────────────────
 
 export const googleDriveApi = {

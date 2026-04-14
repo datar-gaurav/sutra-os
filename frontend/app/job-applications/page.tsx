@@ -1,0 +1,917 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+    Briefcase,
+    Building2,
+    MapPin,
+    ExternalLink,
+    Search,
+    RefreshCw,
+    Play,
+    RotateCcw,
+    LayoutGrid,
+    List as ListIcon,
+    Trash2,
+    X,
+    FileText,
+    Target,
+    TrendingUp,
+    Calendar,
+    Save,
+    Users,
+    UserCircle,
+} from "lucide-react";
+import {
+    jobApplicationsApi,
+    JOB_APP_STATUSES,
+    type JobApplication,
+    type JobApplicationReviewEntry,
+    type JobApplicationStats,
+    type JobAppStatus,
+} from "@/lib/api";
+
+// ─── Status config ─────────────────────────────────────────────────────────────
+
+const STATUS_META: Record<JobAppStatus, { label: string; color: string; ring: string; dot: string }> = {
+    captured: {
+        label: "Captured",
+        color: "bg-stone-500/10 text-stone-300 border-stone-500/30",
+        ring: "ring-stone-500/30",
+        dot: "bg-stone-400",
+    },
+    resume_generated: {
+        label: "Resume Ready",
+        color: "bg-blue-500/10 text-blue-300 border-blue-500/30",
+        ring: "ring-blue-500/30",
+        dot: "bg-blue-400",
+    },
+    applied: {
+        label: "Applied",
+        color: "bg-indigo-500/10 text-indigo-300 border-indigo-500/30",
+        ring: "ring-indigo-500/30",
+        dot: "bg-indigo-400",
+    },
+    interviewing: {
+        label: "Interviewing",
+        color: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+        ring: "ring-amber-500/30",
+        dot: "bg-amber-400",
+    },
+    offer: {
+        label: "Offer",
+        color: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+        ring: "ring-emerald-500/30",
+        dot: "bg-emerald-400",
+    },
+    rejected: {
+        label: "Rejected",
+        color: "bg-rose-500/10 text-rose-300 border-rose-500/30",
+        ring: "ring-rose-500/30",
+        dot: "bg-rose-400",
+    },
+    archived: {
+        label: "Archived",
+        color: "bg-stone-700/30 text-stone-400 border-stone-600/40",
+        ring: "ring-stone-700/40",
+        dot: "bg-stone-500",
+    },
+};
+
+function timeAgo(iso: string | null): string {
+    if (!iso) return "—";
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+}
+
+// ─── Stat card ─────────────────────────────────────────────────────────────────
+
+function StatCard({
+    label,
+    value,
+    icon: Icon,
+    subtitle,
+    accent,
+}: {
+    label: string;
+    value: number | string;
+    icon: any;
+    subtitle?: string;
+    accent: string;
+}) {
+    return (
+        <div className="relative bg-stone-900/60 backdrop-blur-sm border border-white/[0.06] rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-2">
+                <div className={`p-1.5 rounded-lg ${accent}`}>
+                    <Icon className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-[11px] font-medium text-stone-500 uppercase tracking-wider">
+                    {label}
+                </span>
+            </div>
+            <div className="text-2xl font-bold text-white">{value}</div>
+            {subtitle && <p className="text-[11px] text-stone-500 mt-1">{subtitle}</p>}
+        </div>
+    );
+}
+
+// ─── Status pill ───────────────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: JobAppStatus }) {
+    const meta = STATUS_META[status];
+    return (
+        <span
+            className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${meta.color}`}
+        >
+            <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
+            {meta.label}
+        </span>
+    );
+}
+
+function StatusSelect({
+    value,
+    onChange,
+}: {
+    value: JobAppStatus;
+    onChange: (s: JobAppStatus) => void;
+}) {
+    return (
+        <select
+            value={value}
+            onChange={(e) => onChange(e.target.value as JobAppStatus)}
+            className="bg-stone-800 border border-stone-700 text-white text-xs rounded-md px-2 py-1 focus:border-indigo-500 focus:outline-none"
+            onClick={(e) => e.stopPropagation()}
+        >
+            {JOB_APP_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                    {STATUS_META[s].label}
+                </option>
+            ))}
+        </select>
+    );
+}
+
+// ─── Kanban ────────────────────────────────────────────────────────────────────
+
+function Kanban({
+    applications,
+    onStatusChange,
+    onOpen,
+}: {
+    applications: JobApplication[];
+    onStatusChange: (id: string, s: JobAppStatus) => void;
+    onOpen: (app: JobApplication) => void;
+}) {
+    const cols = JOB_APP_STATUSES.filter((s) => s !== "archived");
+    const grouped: Record<string, JobApplication[]> = {};
+    cols.forEach((c) => (grouped[c] = []));
+    applications.forEach((a) => {
+        if (a.status in grouped) grouped[a.status].push(a);
+    });
+
+    const onDragStart = (e: React.DragEvent, id: string) => {
+        e.dataTransfer.setData("text/plain", id);
+    };
+    const onDragOver = (e: React.DragEvent) => e.preventDefault();
+    const onDrop = (e: React.DragEvent, status: JobAppStatus) => {
+        e.preventDefault();
+        const id = e.dataTransfer.getData("text/plain");
+        if (id) onStatusChange(id, status);
+    };
+
+    return (
+        <div className="grid grid-cols-6 gap-3 overflow-x-auto">
+            {cols.map((s) => (
+                <div
+                    key={s}
+                    onDragOver={onDragOver}
+                    onDrop={(e) => onDrop(e, s as JobAppStatus)}
+                    className="bg-stone-900/40 border border-white/[0.06] rounded-xl p-3 min-w-[220px]"
+                >
+                    <div className="flex items-center justify-between mb-3">
+                        <StatusBadge status={s as JobAppStatus} />
+                        <span className="text-xs text-stone-500">{grouped[s].length}</span>
+                    </div>
+                    <div className="space-y-2">
+                        {grouped[s].map((app) => (
+                            <div
+                                key={app.id}
+                                draggable
+                                onDragStart={(e) => onDragStart(e, app.id)}
+                                onClick={() => onOpen(app)}
+                                className="bg-stone-800/60 hover:bg-stone-800 border border-white/[0.04] hover:border-white/[0.12] rounded-lg p-2.5 cursor-pointer transition-colors"
+                            >
+                                <div className="text-xs font-semibold text-white line-clamp-2">
+                                    {app.job_title}
+                                </div>
+                                <div className="text-[11px] text-stone-400 mt-1 flex items-center gap-1">
+                                    <Building2 size={10} />
+                                    {app.company || "—"}
+                                </div>
+                                {app.fit_score != null && (
+                                    <div className="mt-2 flex items-center gap-1.5">
+                                        <div className="flex-1 h-1 bg-stone-700 rounded-full overflow-hidden">
+                                            <div
+                                                className="h-full bg-gradient-to-r from-indigo-500 to-emerald-500"
+                                                style={{ width: `${app.fit_score}%` }}
+                                            />
+                                        </div>
+                                        <span className="text-[10px] text-stone-400">{app.fit_score}</span>
+                                    </div>
+                                )}
+                                <div className="text-[10px] text-stone-500 mt-1.5">
+                                    {timeAgo(app.created_at)}
+                                </div>
+                            </div>
+                        ))}
+                        {grouped[s].length === 0 && (
+                            <div className="text-[11px] text-stone-600 text-center py-6 border border-dashed border-stone-800 rounded-lg">
+                                Drop here
+                            </div>
+                        )}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}
+
+// ─── Review loop panel ─────────────────────────────────────────────────────────
+
+function ReviewLoopPanel({
+    app,
+    onPatch,
+}: {
+    app: JobApplication;
+    onPatch: (patch: Partial<JobApplication>) => void;
+}) {
+    const [entries, setEntries] = useState<JobApplicationReviewEntry[]>(app.review_log || []);
+    const [streaming, setStreaming] = useState(false);
+    const [expanded, setExpanded] = useState<number | null>(null);
+    const [retrying, setRetrying] = useState(false);
+
+    const retry = async (reset: boolean) => {
+        if (retrying) return;
+        if (reset && !confirm("Reset will clear all prior review rounds and generated files. Continue?")) return;
+        setRetrying(true);
+        try {
+            await jobApplicationsApi.retryReview(app.id, reset);
+            if (reset) setEntries([]);
+            // Flip to captured so the SSE effect re-opens the stream.
+            onPatch({ status: "captured" });
+        } catch (e) {
+            console.error(e);
+            alert("Retry failed — check backend logs.");
+        } finally {
+            setRetrying(false);
+        }
+    };
+
+    useEffect(() => {
+        setEntries(app.review_log || []);
+    }, [app.id, app.review_log]);
+
+    // Auto-stream while the builder is still working.
+    useEffect(() => {
+        if (app.status !== "captured") return;
+        const es = jobApplicationsApi.reviewStream(app.id);
+        setStreaming(true);
+        es.onmessage = (ev) => {
+            try {
+                const msg = JSON.parse(ev.data);
+                if (msg.type === "log") {
+                    setEntries((prev) => [...prev, msg.entry as JobApplicationReviewEntry]);
+                } else if (msg.type === "done" || msg.type === "timeout" || msg.type === "error") {
+                    es.close();
+                    setStreaming(false);
+                }
+            } catch { /* ignore */ }
+        };
+        es.onerror = () => {
+            es.close();
+            setStreaming(false);
+        };
+        return () => {
+            es.close();
+            setStreaming(false);
+        };
+    }, [app.id, app.status]);
+
+    return (
+        <div>
+            <div className="flex items-center justify-between mb-2">
+                <div className="text-xs uppercase tracking-wider text-stone-400 flex items-center gap-1.5">
+                    <Target size={12} /> Review Loop
+                    {streaming && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            live
+                        </span>
+                    )}
+                </div>
+                <div className="flex items-center gap-2 text-xs text-stone-400">
+                    <label htmlFor="rounds">Rounds:</label>
+                    <input
+                        id="rounds"
+                        type="number"
+                        min={0}
+                        max={5}
+                        value={app.review_rounds}
+                        onChange={(e) => {
+                            const n = Math.max(0, Math.min(5, Number(e.target.value) || 0));
+                            onPatch({ review_rounds: n });
+                        }}
+                        className="w-14 bg-stone-800 border border-stone-700 rounded-md px-2 py-1 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                    />
+                    <button
+                        onClick={() => retry(false)}
+                        disabled={retrying || streaming}
+                        title="Rerun the review loop, appending new rounds"
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-stone-700 hover:border-indigo-500 hover:text-indigo-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                        <Play size={11} /> Retry
+                    </button>
+                    <button
+                        onClick={() => retry(true)}
+                        disabled={retrying || streaming}
+                        title="Clear prior rounds and generated files, then rerun"
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-stone-700 hover:border-amber-500 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                        <RotateCcw size={11} /> Reset &amp; Retry
+                    </button>
+                </div>
+            </div>
+
+            {entries.length === 0 ? (
+                <div className="text-[11px] text-stone-600 border border-dashed border-stone-800 rounded-lg p-4 text-center">
+                    No review rounds yet. Builder + Critic will run when a job is captured (set Rounds above 0).
+                </div>
+            ) : (
+                <div className="space-y-2">
+                    {entries.map((e, i) => {
+                        const isBuilder = e.role === "builder";
+                        const isOpen = expanded === i;
+                        const label = isBuilder ? "Builder" : `Critic`;
+                        const tone = isBuilder
+                            ? "bg-indigo-500/10 text-indigo-300 border-indigo-500/30"
+                            : "bg-amber-500/10 text-amber-300 border-amber-500/30";
+                        const critic = !isBuilder && typeof e.content === "object" && e.content
+                            ? (e.content as Record<string, unknown>)
+                            : null;
+                        return (
+                            <div
+                                key={i}
+                                className="bg-stone-900/60 border border-white/[0.06] rounded-lg"
+                            >
+                                <button
+                                    onClick={() => setExpanded(isOpen ? null : i)}
+                                    className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left"
+                                >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] border ${tone}`}>
+                                            {label}
+                                        </span>
+                                        <span className="text-[11px] text-stone-400">
+                                            Round {e.round} · {e.agent}
+                                        </span>
+                                        {critic?.status === "approved" && (
+                                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] border bg-emerald-500/10 text-emerald-300 border-emerald-500/30">
+                                                approved
+                                            </span>
+                                        )}
+                                    </div>
+                                    <span className="text-[10px] text-stone-500">
+                                        {isOpen ? "hide" : "show"}
+                                    </span>
+                                </button>
+                                {isOpen && (
+                                    <div className="px-3 pb-3 border-t border-white/[0.04]">
+                                        {critic ? (
+                                            <CriticSummary feedback={critic} />
+                                        ) : (
+                                            <pre className="text-[11px] text-stone-300 whitespace-pre-wrap max-h-96 overflow-y-auto font-mono">
+                                                {typeof e.content === "string"
+                                                    ? e.content
+                                                    : JSON.stringify(e.content, null, 2)}
+                                            </pre>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function CriticSummary({ feedback }: { feedback: Record<string, unknown> }) {
+    const section = (title: string, items: unknown) => {
+        const arr = Array.isArray(items) ? items : [];
+        if (arr.length === 0) return null;
+        return (
+            <div className="mt-2">
+                <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">
+                    {title}
+                </div>
+                <ul className="space-y-1">
+                    {arr.map((item, i) => (
+                        <li key={i} className="text-[11px] text-stone-300">
+                            {typeof item === "string"
+                                ? item
+                                : JSON.stringify(item)}
+                        </li>
+                    ))}
+                </ul>
+            </div>
+        );
+    };
+    return (
+        <div className="pt-2">
+            {typeof feedback.overall_assessment === "string" && (
+                <div className="text-xs text-stone-200 italic">
+                    {feedback.overall_assessment}
+                </div>
+            )}
+            {section("Priority fixes", feedback.priority_fixes)}
+            {section("Fabrication flags", feedback.fabrication_flags)}
+            {section("AI-tone flags", feedback.ai_tone_flags)}
+            {section("Alignment issues", feedback.alignment_issues)}
+            {section("Missing keywords", feedback.missing_keywords)}
+            {section("LaTeX issues", feedback.latex_issues)}
+        </div>
+    );
+}
+
+// ─── Details drawer ────────────────────────────────────────────────────────────
+
+function Drawer({
+    app,
+    onClose,
+    onPatch,
+    onDelete,
+}: {
+    app: JobApplication;
+    onClose: () => void;
+    onPatch: (patch: Partial<JobApplication>) => void;
+    onDelete: () => void;
+}) {
+    const [notes, setNotes] = useState(app.notes || "");
+    const [dirty, setDirty] = useState(false);
+
+    useEffect(() => {
+        setNotes(app.notes || "");
+        setDirty(false);
+    }, [app.id]);
+
+    const saveNotes = () => {
+        onPatch({ notes });
+        setDirty(false);
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
+            <div
+                className="w-full max-w-2xl bg-stone-950 border-l border-white/[0.06] h-full overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div className="sticky top-0 bg-stone-950/95 backdrop-blur-sm border-b border-white/[0.06] p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3 min-w-0">
+                        <Briefcase className="w-5 h-5 text-indigo-400 shrink-0" />
+                        <div className="min-w-0">
+                            <h2 className="text-lg font-semibold text-white truncate">{app.job_title}</h2>
+                            <p className="text-xs text-stone-400 truncate">{app.company || "—"}</p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={onClose}
+                        className="p-2 rounded-lg hover:bg-white/[0.06] text-stone-400"
+                    >
+                        <X className="w-4 h-4" />
+                    </button>
+                </div>
+
+                <div className="p-4 space-y-5">
+                    {/* Status + quick actions */}
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <StatusSelect value={app.status} onChange={(s) => onPatch({ status: s })} />
+                        {app.job_url && (
+                            <a
+                                href={app.job_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300"
+                            >
+                                <ExternalLink size={12} /> LinkedIn
+                            </a>
+                        )}
+                        {app.resume_drive_url && (
+                            <a
+                                href={app.resume_drive_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300"
+                            >
+                                <FileText size={12} /> Tailored Resume
+                            </a>
+                        )}
+                        {app.analysis_drive_url && (
+                            <a
+                                href={app.analysis_drive_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300"
+                            >
+                                <Target size={12} /> Fit Analysis
+                            </a>
+                        )}
+                        <button
+                            onClick={() => {
+                                if (confirm("Delete this application?")) onDelete();
+                            }}
+                            className="ml-auto p-1.5 rounded-md text-rose-400 hover:bg-rose-500/10"
+                        >
+                            <Trash2 size={14} />
+                        </button>
+                    </div>
+
+                    {/* Meta grid */}
+                    <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-stone-900/60 border border-white/[0.06] rounded-lg p-3">
+                            <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">
+                                Location
+                            </div>
+                            <div className="text-sm text-white flex items-center gap-1.5">
+                                <MapPin size={12} className="text-stone-500" />
+                                {app.location || "—"}
+                            </div>
+                        </div>
+                        <div className="bg-stone-900/60 border border-white/[0.06] rounded-lg p-3">
+                            <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">
+                                Salary
+                            </div>
+                            <div className="text-sm text-white">{app.salary || "—"}</div>
+                        </div>
+                        <div className="bg-stone-900/60 border border-white/[0.06] rounded-lg p-3">
+                            <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">
+                                Fit Score
+                            </div>
+                            <div className="text-sm text-white">
+                                {app.fit_score != null ? `${app.fit_score}/100` : "—"}
+                            </div>
+                        </div>
+                        <div className="bg-stone-900/60 border border-white/[0.06] rounded-lg p-3">
+                            <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">
+                                Captured
+                            </div>
+                            <div className="text-sm text-white">{timeAgo(app.created_at)}</div>
+                        </div>
+                    </div>
+
+                    {/* People */}
+                    {app.people && app.people.length > 0 && (
+                        <div>
+                            <div className="text-xs uppercase tracking-wider text-stone-400 mb-2 flex items-center gap-1.5">
+                                <Users size={12} /> People to reach out to
+                            </div>
+                            <div className="space-y-2">
+                                {app.people.map((p, i) => {
+                                    const roleLabel =
+                                        p.role === "hiring_manager"
+                                            ? { text: "Hiring Team", color: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30" }
+                                            : p.role === "poster"
+                                                ? { text: "Job Poster", color: "bg-indigo-500/10 text-indigo-300 border-indigo-500/30" }
+                                                : { text: "Connection", color: "bg-blue-500/10 text-blue-300 border-blue-500/30" };
+                                    return (
+                                        <a
+                                            key={i}
+                                            href={p.profile_url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="flex items-start gap-3 bg-stone-900/60 hover:bg-stone-900 border border-white/[0.06] hover:border-white/[0.12] rounded-lg p-3 transition-colors"
+                                        >
+                                            <UserCircle className="w-8 h-8 text-stone-500 shrink-0" />
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <span className="text-sm font-medium text-white">{p.name}</span>
+                                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] border ${roleLabel.color}`}>
+                                                        {roleLabel.text}
+                                                    </span>
+                                                </div>
+                                                {p.title && (
+                                                    <div className="text-xs text-stone-400 mt-0.5 truncate">{p.title}</div>
+                                                )}
+                                            </div>
+                                            <ExternalLink size={12} className="text-stone-500 shrink-0 mt-1" />
+                                        </a>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Review loop */}
+                    <ReviewLoopPanel app={app} onPatch={onPatch} />
+
+                    {/* Notes */}
+                    <div>
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="text-xs uppercase tracking-wider text-stone-400">Notes</div>
+                            {dirty && (
+                                <button
+                                    onClick={saveNotes}
+                                    className="inline-flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300"
+                                >
+                                    <Save size={12} /> Save
+                                </button>
+                            )}
+                        </div>
+                        <textarea
+                            value={notes}
+                            onChange={(e) => {
+                                setNotes(e.target.value);
+                                setDirty(true);
+                            }}
+                            onBlur={() => dirty && saveNotes()}
+                            placeholder="Interview prep, recruiter name, follow-up reminders…"
+                            rows={6}
+                            className="w-full bg-stone-900/60 border border-white/[0.06] focus:border-indigo-500 rounded-lg p-3 text-sm text-white placeholder-stone-600 focus:outline-none"
+                        />
+                    </div>
+
+                    {/* Description */}
+                    <div>
+                        <div className="text-xs uppercase tracking-wider text-stone-400 mb-2">
+                            Job Description
+                        </div>
+                        <div className="bg-stone-900/60 border border-white/[0.06] rounded-lg p-3 text-sm text-stone-300 whitespace-pre-wrap max-h-96 overflow-y-auto">
+                            {app.job_description || "—"}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Page ──────────────────────────────────────────────────────────────────────
+
+export default function JobApplicationsPage() {
+    const [apps, setApps] = useState<JobApplication[]>([]);
+    const [stats, setStats] = useState<JobApplicationStats | null>(null);
+    const [view, setView] = useState<"table" | "kanban">("table");
+    const [loading, setLoading] = useState(true);
+    const [search, setSearch] = useState("");
+    const [statusFilter, setStatusFilter] = useState<string>("");
+    const [selected, setSelected] = useState<JobApplication | null>(null);
+
+    const load = useCallback(async () => {
+        setLoading(true);
+        try {
+            const [list, s] = await Promise.all([
+                jobApplicationsApi.list({ status: statusFilter || undefined, search: search || undefined }),
+                jobApplicationsApi.stats(),
+            ]);
+            setApps(list);
+            setStats(s);
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setLoading(false);
+        }
+    }, [statusFilter, search]);
+
+    useEffect(() => {
+        load();
+    }, [load]);
+
+    const patch = async (id: string, data: Partial<JobApplication>) => {
+        const updated = await jobApplicationsApi.update(id, data);
+        setApps((prev) => prev.map((a) => (a.id === id ? updated : a)));
+        if (selected?.id === id) setSelected(updated);
+        // refresh stats in background
+        jobApplicationsApi.stats().then(setStats).catch(() => {});
+    };
+
+    const remove = async (id: string) => {
+        await jobApplicationsApi.delete(id);
+        setApps((prev) => prev.filter((a) => a.id !== id));
+        if (selected?.id === id) setSelected(null);
+        jobApplicationsApi.stats().then(setStats).catch(() => {});
+    };
+
+    const filtered = useMemo(() => apps, [apps]);
+
+    return (
+        <div className="min-h-screen bg-stone-950 text-white">
+            <div className="max-w-[1600px] mx-auto p-6 space-y-6">
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h1 className="text-2xl font-bold flex items-center gap-2">
+                            <Briefcase className="text-indigo-400" /> Job Applications
+                        </h1>
+                        <p className="text-sm text-stone-400 mt-1">
+                            Jobs captured from LinkedIn via the Sutra Chrome extension.
+                        </p>
+                    </div>
+                    <button
+                        onClick={load}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 bg-stone-900 border border-white/[0.06] hover:border-white/[0.12] rounded-lg text-sm"
+                    >
+                        <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
+                    </button>
+                </div>
+
+                {/* Stats */}
+                {stats && (
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                        <StatCard
+                            label="Total"
+                            value={stats.total}
+                            icon={Briefcase}
+                            accent="bg-indigo-500/10 text-indigo-300"
+                        />
+                        <StatCard
+                            label="This Week"
+                            value={stats.this_week}
+                            icon={Calendar}
+                            accent="bg-blue-500/10 text-blue-300"
+                        />
+                        <StatCard
+                            label="Applied"
+                            value={
+                                (stats.by_status.applied || 0) +
+                                (stats.by_status.interviewing || 0) +
+                                (stats.by_status.offer || 0) +
+                                (stats.by_status.rejected || 0)
+                            }
+                            icon={FileText}
+                            accent="bg-emerald-500/10 text-emerald-300"
+                        />
+                        <StatCard
+                            label="Interviewing"
+                            value={stats.by_status.interviewing || 0}
+                            icon={Target}
+                            accent="bg-amber-500/10 text-amber-300"
+                        />
+                        <StatCard
+                            label="Response Rate"
+                            value={`${stats.response_rate}%`}
+                            icon={TrendingUp}
+                            accent="bg-rose-500/10 text-rose-300"
+                            subtitle="Interviews ÷ Applied+"
+                        />
+                    </div>
+                )}
+
+                {/* Filters */}
+                <div className="flex items-center gap-2 flex-wrap">
+                    <div className="relative flex-1 min-w-[220px] max-w-md">
+                        <Search
+                            size={14}
+                            className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500"
+                        />
+                        <input
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            placeholder="Search title, company, description, notes…"
+                            className="w-full bg-stone-900 border border-white/[0.06] rounded-lg pl-9 pr-3 py-2 text-sm placeholder-stone-500 focus:border-indigo-500 focus:outline-none"
+                        />
+                    </div>
+                    <select
+                        value={statusFilter}
+                        onChange={(e) => setStatusFilter(e.target.value)}
+                        className="bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    >
+                        <option value="">All statuses</option>
+                        {JOB_APP_STATUSES.map((s) => (
+                            <option key={s} value={s}>
+                                {STATUS_META[s].label}
+                            </option>
+                        ))}
+                    </select>
+                    <div className="ml-auto inline-flex bg-stone-900 border border-white/[0.06] rounded-lg p-0.5">
+                        <button
+                            onClick={() => setView("table")}
+                            className={`px-3 py-1.5 text-xs rounded-md inline-flex items-center gap-1.5 ${view === "table" ? "bg-white/[0.08] text-white" : "text-stone-400"
+                                }`}
+                        >
+                            <ListIcon size={14} /> Table
+                        </button>
+                        <button
+                            onClick={() => setView("kanban")}
+                            className={`px-3 py-1.5 text-xs rounded-md inline-flex items-center gap-1.5 ${view === "kanban" ? "bg-white/[0.08] text-white" : "text-stone-400"
+                                }`}
+                        >
+                            <LayoutGrid size={14} /> Kanban
+                        </button>
+                    </div>
+                </div>
+
+                {/* Main view */}
+                {view === "table" ? (
+                    <div className="bg-stone-900/40 border border-white/[0.06] rounded-xl overflow-hidden">
+                        <table className="w-full text-sm">
+                            <thead className="bg-stone-900/80 border-b border-white/[0.06]">
+                                <tr className="text-left text-[11px] uppercase tracking-wider text-stone-500">
+                                    <th className="px-4 py-2.5 font-medium">Role</th>
+                                    <th className="px-4 py-2.5 font-medium">Company</th>
+                                    <th className="px-4 py-2.5 font-medium">Location</th>
+                                    <th className="px-4 py-2.5 font-medium">Status</th>
+                                    <th className="px-4 py-2.5 font-medium">Fit</th>
+                                    <th className="px-4 py-2.5 font-medium">Resume</th>
+                                    <th className="px-4 py-2.5 font-medium">Contacts</th>
+                                    <th className="px-4 py-2.5 font-medium">Captured</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filtered.map((a) => (
+                                    <tr
+                                        key={a.id}
+                                        onClick={() => setSelected(a)}
+                                        className="border-b border-white/[0.04] hover:bg-white/[0.02] cursor-pointer"
+                                    >
+                                        <td className="px-4 py-3 font-medium text-white max-w-[280px] truncate">
+                                            {a.job_title}
+                                        </td>
+                                        <td className="px-4 py-3 text-stone-300">{a.company || "—"}</td>
+                                        <td className="px-4 py-3 text-stone-400">{a.location || "—"}</td>
+                                        <td className="px-4 py-3">
+                                            <StatusSelect
+                                                value={a.status}
+                                                onChange={(s) => patch(a.id, { status: s })}
+                                            />
+                                        </td>
+                                        <td className="px-4 py-3 text-stone-300">
+                                            {a.fit_score != null ? `${a.fit_score}` : "—"}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            {a.resume_drive_url ? (
+                                                <a
+                                                    href={a.resume_drive_url}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    className="inline-flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300"
+                                                >
+                                                    <FileText size={12} /> Open
+                                                </a>
+                                            ) : (
+                                                <span className="text-stone-600 text-xs">—</span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            {a.people && a.people.length > 0 ? (
+                                                <span className="inline-flex items-center gap-1 text-xs text-stone-300">
+                                                    <Users size={12} className="text-stone-500" />
+                                                    {a.people.length}
+                                                </span>
+                                            ) : (
+                                                <span className="text-stone-600 text-xs">—</span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-3 text-stone-500 text-xs">
+                                            {timeAgo(a.created_at)}
+                                        </td>
+                                    </tr>
+                                ))}
+                                {filtered.length === 0 && (
+                                    <tr>
+                                        <td
+                                            colSpan={8}
+                                            className="px-4 py-12 text-center text-stone-500 text-sm"
+                                        >
+                                            {loading ? "Loading…" : "No job applications yet. Capture one from LinkedIn with the Sutra extension."}
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                ) : (
+                    <Kanban
+                        applications={filtered}
+                        onStatusChange={(id, s) => patch(id, { status: s })}
+                        onOpen={(a) => setSelected(a)}
+                    />
+                )}
+            </div>
+
+            {selected && (
+                <Drawer
+                    app={selected}
+                    onClose={() => setSelected(null)}
+                    onPatch={(p) => patch(selected.id, p)}
+                    onDelete={() => remove(selected.id)}
+                />
+            )}
+        </div>
+    );
+}

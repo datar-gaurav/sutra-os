@@ -19,6 +19,7 @@ from app.tools.os_tools import (
 from app.tools.github_tools import commit_and_push, create_github_issue, create_github_pr
 from app.tools.developer_tools import run_gemini_cli
 from app.tools.scraper_tools import append_to_google_sheet, scrape_webpage
+from app.tools.job_application_tools import update_job_application
 from app.core.mcp_manager import mcp_manager
 from app.tools.discussion_tools import DISCUSSION_TOOL_IDS, create_discussion_tools
 from app.tools.task_tools import TASK_TOOL_IDS, create_task_tools
@@ -818,6 +819,14 @@ TOOL_CATALOG: list[dict] = [
         "category": "browser",
         "is_dangerous": False,
     },
+    # ── Job Applications ───────────────────────────────────────────────────
+    {
+        "id": "update_job_application",
+        "name": "Update Job Application",
+        "description": "Patch a job_application row with resume Drive URL, fit score, status, or notes. Used by the Resume Builder after tailoring.",
+        "category": "integrations",
+        "is_dangerous": False,
+    },
     # ── Playbook Tools ─────────────────────────────────────────────────────
     {
         "id": "list_playbooks",
@@ -862,6 +871,7 @@ _TOOL_MAP: dict[str, BaseTool] = {
     "append_to_google_sheet": append_to_google_sheet,
     "list_playbooks": create_playbook_tools()[0],
     "load_playbook": create_playbook_tools()[1],
+    "update_job_application": update_job_application,
 }
 
 

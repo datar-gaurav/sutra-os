@@ -10,7 +10,7 @@ import { Sidebar } from "./sidebar";
 const PUBLIC_ROUTES = ["/login"];
 
 // Routes that render fullscreen without sidebar (e.g. mission-control dashboards)
-const STANDALONE_ROUTES = ["/social-pulse"];
+const STANDALONE_ROUTES = ["/social-pulse", "/job-applications"];
 
 // Routes that use the sidebar but want full-width content (e.g. Chat)
 const FULL_WIDTH_ROUTES = ["/chat"];
