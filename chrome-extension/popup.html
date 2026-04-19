@@ -54,23 +54,32 @@
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
-    .field .value {
+    .field input,
+    .field textarea {
+      width: 100%;
+      font-family: inherit;
       font-size: 13px;
       color: #e2e8f0;
       background: #1e293b;
       border: 1px solid #334155;
       border-radius: 6px;
       padding: 6px 10px;
+      outline: none;
+      transition: border-color 0.15s;
       word-break: break-word;
     }
-    .field .value.placeholder { color: #475569; font-style: italic; }
+    .field input:focus,
+    .field textarea:focus { border-color: #3b82f6; }
+    .field input::placeholder,
+    .field textarea::placeholder { color: #475569; font-style: italic; }
 
-    .desc-value {
-      max-height: 80px;
-      overflow-y: auto;
-      white-space: pre-wrap;
+    .field textarea {
+      min-height: 80px;
+      max-height: 160px;
+      resize: vertical;
       font-size: 11px;
       line-height: 1.5;
+      white-space: pre-wrap;
     }
 
     .settings-row {
@@ -191,23 +200,23 @@
   <div id="view-main">
     <div class="field">
       <label>Role</label>
-      <div class="value" id="field-title">—</div>
+      <input type="text" id="field-title" placeholder="Not found — add manually" />
     </div>
     <div class="field">
       <label>Company</label>
-      <div class="value" id="field-company">—</div>
+      <input type="text" id="field-company" placeholder="Not found — add manually" />
     </div>
     <div class="field">
       <label>Location</label>
-      <div class="value" id="field-location">—</div>
+      <input type="text" id="field-location" placeholder="Not found — add manually" />
     </div>
     <div class="field">
       <label>Salary <span class="tag">if shown</span></label>
-      <div class="value" id="field-salary">—</div>
+      <input type="text" id="field-salary" placeholder="Optional" />
     </div>
     <div class="field">
-      <label>Description preview</label>
-      <div class="value desc-value" id="field-desc">—</div>
+      <label>Description</label>
+      <textarea id="field-desc" placeholder="Not found — paste description here"></textarea>
     </div>
 
     <div class="divider"></div>
@@ -230,7 +239,7 @@
       <input
         type="url"
         id="input-webhook"
-        placeholder="http://localhost:8000/api/public/triggers/webhook/..."
+        placeholder="http://localhost:8000/api/public/job-applications/capture"
       />
     </div>
     <button class="btn btn-primary" id="btn-save-settings">Save</button>

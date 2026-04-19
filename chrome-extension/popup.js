@@ -1,5 +1,13 @@
 "use strict";
 
+const DEFAULT_WEBHOOK_URL =
+  "http://localhost:8000/api/public/job-applications/capture";
+
+async function getWebhookUrl() {
+  const { webhookUrl } = await chrome.storage.sync.get("webhookUrl");
+  return webhookUrl || DEFAULT_WEBHOOK_URL;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function showView(id) {
@@ -14,15 +22,13 @@ function showStatus(el, message, type) {
   el.className = `status ${type}`;
 }
 
-function setText(id, text, placeholder = false) {
+function setField(id, text) {
   const el = document.getElementById(id);
-  if (!text || !text.trim()) {
-    el.textContent = "—";
-    el.classList.add("placeholder");
-  } else {
-    el.textContent = text.trim();
-    el.classList.remove("placeholder");
-  }
+  el.value = text && text.trim() ? text.trim() : "";
+}
+
+function getField(id) {
+  return document.getElementById(id).value.trim();
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -32,11 +38,11 @@ let capturedData = null;
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const { webhookUrl } = await chrome.storage.sync.get("webhookUrl");
+  const webhookUrl = await getWebhookUrl();
 
-  // Wire settings view
+  // Wire settings view — prefill with current or default URL so the user can see/edit
   const inputWebhook = document.getElementById("input-webhook");
-  if (webhookUrl) inputWebhook.value = webhookUrl;
+  inputWebhook.value = webhookUrl;
 
   document.getElementById("btn-save-settings").addEventListener("click", saveSettings);
   document.getElementById("btn-back").addEventListener("click", () => showView("view-main"));
@@ -95,10 +101,10 @@ async function scrapeCurrentTab(tabId) {
     if (missing.length === 0) {
       statusEl.className = "status"; // hide
     } else {
-      showStatus(statusEl, `Captured — ${missing.join(", ")} not found on page.`, "info");
+      showStatus(statusEl, `Captured — edit any field before sending. Missing: ${missing.join(", ")}.`, "info");
     }
 
-    sendBtn.disabled = !(capturedData.job_title || capturedData.job_description);
+    sendBtn.disabled = false;
 
   } catch (err) {
     showStatus(statusEl, `Scrape failed: ${err.message}`, "error");
@@ -106,13 +112,11 @@ async function scrapeCurrentTab(tabId) {
 }
 
 function renderJobData(data) {
-  setText("field-title",   data.job_title);
-  setText("field-company", data.company);
-  setText("field-location", data.location);
-  setText("field-salary",  data.salary);
-
-  const desc = data.job_description || "";
-  setText("field-desc", desc.length > 400 ? desc.slice(0, 400) + "…" : desc);
+  setField("field-title",    data.job_title);
+  setField("field-company",  data.company);
+  setField("field-location", data.location);
+  setField("field-salary",   data.salary);
+  setField("field-desc",     data.job_description);
 }
 
 // ── Send ──────────────────────────────────────────────────────────────────────
@@ -121,15 +125,24 @@ async function sendToSutra() {
   const statusEl = document.getElementById("status-msg");
   const sendBtn  = document.getElementById("btn-send");
 
-  const { webhookUrl } = await chrome.storage.sync.get("webhookUrl");
+  const webhookUrl = await getWebhookUrl();
 
   if (!webhookUrl) {
     showStatus(statusEl, "No webhook URL configured. Click Settings to add one.", "error");
     return;
   }
 
-  if (!capturedData) {
-    showStatus(statusEl, "No job data captured yet.", "error");
+  const payload = {
+    ...(capturedData || {}),
+    job_title:       getField("field-title"),
+    company:         getField("field-company"),
+    location:        getField("field-location"),
+    salary:          getField("field-salary"),
+    job_description: getField("field-desc"),
+  };
+
+  if (!payload.job_title && !payload.job_description) {
+    showStatus(statusEl, "Add at least a role or description before sending.", "error");
     return;
   }
 
@@ -140,7 +153,7 @@ async function sendToSutra() {
     const res = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(capturedData),
+      body: JSON.stringify(payload),
     });
 
     const body = await res.text().catch(() => "");
@@ -148,7 +161,7 @@ async function sendToSutra() {
     if (res.ok) {
       showStatus(
         statusEl,
-        `Sent! Resume Builder is tailoring your resume for ${capturedData.company || "this role"}.`,
+        `Sent! Resume Builder is tailoring your resume for ${payload.company || "this role"}.`,
         "success"
       );
     } else {
