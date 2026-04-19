@@ -2,17 +2,17 @@
 
 import { useState, useEffect, useCallback } from "react";
 import {
-    Sparkles, Plus, X, ChevronUp, ChevronDown, Eye, EyeOff,
+    Sparkles, Plus, X, ChevronUp, ChevronDown, Eye, EyeOff, Pencil,
     Code2, Globe, Mail, BarChart3, FileText, ClipboardList, Database,
     Languages, BookOpen, ShieldCheck, HeartHandshake, KanbanSquare, Upload,
-    Github, Search, Bot, AlertCircle,
+    Github, Search, Bot, AlertCircle, TrendingUp,
 } from "lucide-react";
 import { skillsApi, Skill, AgentSkill } from "@/lib/api";
 
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
     Code2, Globe, Mail, BarChart3, FileText, ClipboardList, Database,
     Languages, BookOpen, ShieldCheck, HeartHandshake, KanbanSquare, Upload,
-    Github, Search, Sparkles, Bot,
+    Github, Search, Sparkles, Bot, TrendingUp,
 };
 
 function SkillIcon({ icon, color }: { icon: string | null; color: string | null }) {
@@ -165,6 +165,112 @@ function PickSkillModal({
     );
 }
 
+// ─── Edit Overrides Modal ─────────────────────────────────────────────────────
+
+function EditOverridesModal({
+    agentId, row, onClose, onSaved,
+}: {
+    agentId: string;
+    row: AgentSkill;
+    onClose: () => void;
+    onSaved: () => void;
+}) {
+    const schemaProps = (row.skill.config_schema?.properties as Record<string, any>) ?? {};
+    const [overrides, setOverrides] = useState<Record<string, string>>(() => {
+        const initial: Record<string, string> = {};
+        for (const [k, v] of Object.entries(row.config_overrides || {})) {
+            initial[k] = String(v);
+        }
+        return initial;
+    });
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState("");
+
+    const handleSave = async () => {
+        setSaving(true); setError("");
+        try {
+            const cleaned: Record<string, any> = {};
+            for (const [k, raw] of Object.entries(overrides)) {
+                if (raw === "" || raw === undefined) continue;
+                const propType = schemaProps[k]?.type;
+                if (propType === "number") {
+                    const n = Number(raw);
+                    if (Number.isNaN(n)) { setError(`${k} must be a number`); setSaving(false); return; }
+                    cleaned[k] = n;
+                } else {
+                    cleaned[k] = raw;
+                }
+            }
+            await skillsApi.updateAgentSkill(agentId, row.id, { config_overrides: cleaned });
+            onSaved(); onClose();
+        } catch (err: any) {
+            setError(err.message || "Failed to save overrides");
+        } finally { setSaving(false); }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col border border-gray-200 dark:border-gray-700">
+                <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between flex-shrink-0">
+                    <h3 className="font-semibold text-gray-900 dark:text-white text-sm flex items-center gap-2">
+                        <SkillIcon icon={row.skill.icon} color={row.skill.color} />
+                        Edit: {row.skill.name}
+                    </h3>
+                    <button onClick={onClose} className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg text-gray-400">
+                        <X className="w-4 h-4" />
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                    {error && (
+                        <div className="flex items-center gap-2 text-red-600 text-xs bg-red-50 dark:bg-red-900/20 rounded-lg p-2.5">
+                            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {error}
+                        </div>
+                    )}
+                    {Object.keys(schemaProps).length === 0 ? (
+                        <p className="text-xs text-gray-500 text-center py-4">This skill has no configurable parameters.</p>
+                    ) : (
+                        Object.entries(schemaProps).map(([key, prop]: [string, any]) => (
+                            <div key={key}>
+                                <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
+                                    {prop.description || key}
+                                    {prop.default !== undefined && <span className="ml-1 text-gray-400 font-normal">default: {String(prop.default)}</span>}
+                                </label>
+                                {prop.enum ? (
+                                    <select value={overrides[key] ?? ""} onChange={e => setOverrides(o => ({ ...o, [key]: e.target.value }))}
+                                        className="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-stone-600">
+                                        <option value="">(use default)</option>
+                                        {prop.enum.map((v: string) => <option key={v} value={v}>{v}</option>)}
+                                    </select>
+                                ) : (
+                                    <input type={prop.type === "number" ? "number" : "text"}
+                                        step={prop.type === "number" ? "any" : undefined}
+                                        placeholder={prop.default !== undefined ? `default: ${prop.default}` : ""}
+                                        value={overrides[key] ?? ""} onChange={e => setOverrides(o => ({ ...o, [key]: e.target.value }))}
+                                        className="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-stone-600" />
+                                )}
+                            </div>
+                        ))
+                    )}
+                    <p className="text-[11px] text-gray-400 pt-2 border-t border-gray-100 dark:border-gray-700">
+                        Leave a field blank to clear the override and fall back to the schema default. Restart the agent for changes to take effect.
+                    </p>
+                </div>
+
+                <div className="p-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 flex-shrink-0">
+                    <button onClick={onClose} className="flex-1 px-4 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-300 text-sm hover:bg-gray-50 dark:hover:bg-gray-800">
+                        Cancel
+                    </button>
+                    <button onClick={handleSave} disabled={saving}
+                        className="flex-1 px-4 py-2 bg-stone-700 hover:bg-stone-700 rounded-lg text-white text-sm font-medium disabled:opacity-40 transition-colors">
+                        {saving ? "Saving…" : "Save"}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function SkillsSection({ agentId }: { agentId: string }) {
@@ -172,6 +278,7 @@ export function SkillsSection({ agentId }: { agentId: string }) {
     const [loading, setLoading] = useState(true);
     const [showPicker, setShowPicker] = useState(false);
     const [showPromptPreview, setShowPromptPreview] = useState(false);
+    const [editingRow, setEditingRow] = useState<AgentSkill | null>(null);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -285,10 +392,18 @@ export function SkillsSection({ agentId }: { agentId: string }) {
                                 )}
                             </div>
 
-                            <button type="button" onClick={() => handleDetach(row.id, row.skill.name)}
-                                className="text-gray-300 hover:text-red-400 transition-colors mt-0.5 flex-shrink-0" title="Detach skill">
-                                <X className="w-4 h-4" />
-                            </button>
+                            <div className="flex items-center gap-1 mt-0.5 flex-shrink-0">
+                                {Object.keys((row.skill.config_schema?.properties as Record<string, any>) ?? {}).length > 0 && (
+                                    <button type="button" onClick={() => setEditingRow(row)}
+                                        className="text-gray-300 hover:text-stone-600 transition-colors" title="Edit overrides">
+                                        <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                )}
+                                <button type="button" onClick={() => handleDetach(row.id, row.skill.name)}
+                                    className="text-gray-300 hover:text-red-400 transition-colors" title="Detach skill">
+                                    <X className="w-4 h-4" />
+                                </button>
+                            </div>
                         </div>
                     ))}
                 </div>
@@ -316,6 +431,15 @@ export function SkillsSection({ agentId }: { agentId: string }) {
                     existingSkillIds={agentSkills.map(s => s.skill_id)}
                     onClose={() => setShowPicker(false)}
                     onAttached={load}
+                />
+            )}
+
+            {editingRow && (
+                <EditOverridesModal
+                    agentId={agentId}
+                    row={editingRow}
+                    onClose={() => setEditingRow(null)}
+                    onSaved={load}
                 />
             )}
         </div>

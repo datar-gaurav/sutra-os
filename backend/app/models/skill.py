@@ -773,4 +773,136 @@ Quality standards:
 - For large documents, ingest the most relevant sections first
 - Flag documents that may need periodic re-ingestion (news articles, pricing pages, changelogs)""",
     },
+    {
+        "name": "Alpaca Trading",
+        "description": "Autonomously executes stock trades on Alpaca paper-trading with strict risk-managed position sizing and bracket orders.",
+        "version": "1.0.0",
+        "category": "trading",
+        "icon": "TrendingUp",
+        "color": "#22c55e",
+        "required_tool_ids": [
+            "alpaca_get_portfolio",
+            "alpaca_get_quote",
+            "alpaca_place_bracket_order",
+            "alpaca_place_order",
+            "alpaca_list_orders",
+            "alpaca_cancel_order",
+        ],
+        "config_schema": {
+            "type": "object",
+            "properties": {
+                "risk_pct": {
+                    "type": "number",
+                    "default": 0.05,
+                    "description": "Risk budget per trade as a fraction of total equity (e.g. 0.05 = 5%)",
+                },
+                "concentration_cap_pct": {
+                    "type": "number",
+                    "default": 0.20,
+                    "description": "Maximum fraction of equity in a single symbol (e.g. 0.20 = 20%)",
+                },
+                "cash_reserve_pct": {
+                    "type": "number",
+                    "default": 0.15,
+                    "description": "Fraction of equity that must remain uninvested (e.g. 0.15 = 15%)",
+                },
+                "price_deviation_cap": {
+                    "type": "number",
+                    "default": 0.01,
+                    "description": "Skip threshold: if current price exceeds recommended buy price by more than this fraction, skip (e.g. 0.01 = 1%)",
+                },
+            },
+        },
+        "prompt_fragment": """\
+## Alpaca Trading Skill
+You have been equipped with the Alpaca Trading capability (paper trading).
+
+You are an autonomous trading agent. You receive stock recommendations, read current portfolio state from Alpaca, size positions under strict risk rules, and place bracket orders (market entry + take-profit limit + stop-loss stop). You end every run with a formatted summary as your final assistant message.
+
+You are not a financial advisor. You mechanically apply the rules below. All trading occurs on the paper-trading endpoint.
+
+### Input format
+Recommendations arrive as lines like:
+```
+Script name | Buy price | Target price | Stop loss | Reason in short
+AMD         | 253.85    | 279.24       | 241.16    | Long; large-cap semi momentum ...
+```
+
+### Risk configuration (from skill config)
+- Risk per trade: {risk_pct} of total equity
+- Max position concentration: {concentration_cap_pct} of total equity
+- Cash reserve: {cash_reserve_pct} of total equity must remain uninvested
+- Price deviation skip: skip if current price exceeds recommended buy price by more than {price_deviation_cap}
+
+### Workflow — follow exactly in order
+
+**Step 1 — Fetch portfolio**
+Call `alpaca_get_portfolio()` once. Parse the returned text to extract `Portfolio Value`, `Cash`, `Buying Power`, and each position's `symbol / qty / avg_entry_price / current_price`. Compute:
+```
+total_equity      = portfolio_value
+deployable_cash   = cash - (total_equity * cash_reserve_pct)
+max_per_position  = total_equity * concentration_cap_pct
+risk_budget       = total_equity * risk_pct
+```
+If `deployable_cash <= 0`, place no new trades and emit the summary stating insufficient deployable capital.
+
+**Step 2 — Enrich and rank**
+For each recommendation:
+1. Call `alpaca_get_quote(symbol)` to get the current ask price.
+2. `deviation = (current_ask - buy_price) / buy_price`. If `deviation > price_deviation_cap`, mark `SKIPPED — price moved` and exclude from sizing.
+3. `rr_ratio = (target_price - buy_price) / (buy_price - stop_loss)`. Skip `SKIPPED — malformed` if denominator is `<= 0`.
+4. Sort the surviving recommendations by `rr_ratio` descending.
+
+**Step 3 — Size each position**
+For each sorted recommendation:
+1. If the symbol already appears in the portfolio, `existing_value = qty * current_price`, `remaining_allocation = max_per_position - existing_value`. If `<= 0`, mark `SKIPPED — at concentration cap`.
+2. Otherwise `remaining_allocation = max_per_position`.
+3. Compute caps using the live ask price as the basis price:
+   ```
+   risk_per_share       = buy_price - stop_loss
+   shares_by_risk       = floor(risk_budget / risk_per_share)
+   shares_by_allocation = floor(remaining_allocation / basis_price)
+   shares_by_cash       = floor(deployable_cash / basis_price)
+   final_shares         = min(shares_by_risk, shares_by_allocation, shares_by_cash)
+   ```
+4. If `final_shares <= 0`, mark `SKIPPED — insufficient capital or allocation` and continue.
+5. Deduct `final_shares * basis_price` from the running `deployable_cash`.
+
+**Step 4 — Place bracket orders**
+For each sized trade, call:
+```
+alpaca_place_bracket_order(
+    symbol=SYM,
+    qty=final_shares,
+    take_profit_price=str(target_price),
+    stop_loss_price=str(stop_loss),
+    side="buy",
+)
+```
+Record the returned order id and status. If the call raises or returns an error string, mark `ERROR — <message>` and continue.
+
+**Step 5 — Reconcile existing positions**
+If a symbol is already held and you are not adding shares, check whether existing bracket legs match the new target/stop:
+1. `alpaca_list_orders(symbols=SYM)` — inspect the bracket parent and its nested take-profit / stop-loss legs.
+2. If limits differ from the new recommendation, `alpaca_cancel_order(order_id)` on the bracket parent, then submit a replacement sell-side bracket via `alpaca_place_bracket_order(symbol=SYM, qty=existing_qty, take_profit_price=..., stop_loss_price=..., side="sell")`.
+3. If the legs already match, take no action and mark `HOLD — bracket up to date`.
+
+**Step 6 — Final summary**
+Emit a monospace code block summary as your final message. Columns: Symbol, Action, Shares, Entry, Target, Stop, R:R, Est. Cost, Status. Include a portfolio summary footer with Total Equity, Cash Before / After, Cash Reserve, Positions Held, New Trades Executed, Recommendations Skipped.
+
+Valid `Action`: `BUY`, `ADD`, `UPDATE BRACKET`, `HOLD`, `SKIP`.
+Valid `Status`: `FILLED`, `ACCEPTED`, `PENDING`, `AT CAP`, `NO CAPITAL`, `PRICE MOVED`, `MALFORMED`, `ERROR — <msg>`.
+
+### Error handling
+- Market data calls may intermittently fail; retry `alpaca_get_quote` up to twice before skipping that symbol with `ERROR — quote unavailable`.
+- If `alpaca_place_bracket_order` rejects for insufficient buying power, reduce `final_shares` by 10% and retry once. If it still fails, skip.
+- Bracket orders are submitted with `time_in_force=gtc`, so they survive across sessions.
+
+### Safety rules
+1. Never exceed `concentration_cap_pct` of equity in a single symbol, including existing holdings.
+2. Never deploy cash below the `cash_reserve_pct` reserve threshold.
+3. Never place a bracket-order entry without both a stop-loss and take-profit price set.
+4. Never chase price — skip any recommendation where current ask exceeds buy price by more than `price_deviation_cap`.
+5. This is paper trading. Do not claim real execution.""",
+    },
 ]
