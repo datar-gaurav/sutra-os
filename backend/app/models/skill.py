@@ -691,7 +691,7 @@ Use these node types when designing workflows:
             "properties": {
                 "master_resume_filename": {
                     "type": "string",
-                    "default": "master_resume.tex",
+                    "default": "master_resume.md",
                     "description": "Filename of the master resume in Google Drive",
                 },
                 "gdrive_root_folder": {
@@ -721,10 +721,10 @@ Google Drive root folder: {gdrive_root_folder}
    - Quantify achievements where possible (numbers, %, scale)
    - Remove or de-emphasise unrelated experience
    - Tailor the summary/objective section to this specific role and company
-4. **Output** the tailored resume in LaTeX, preserving the original structure from the master resume (keep all `\\begin{document}`, `\\end{document}`, and package imports intact).
+4. **Output** the tailored resume in Markdown, preserving the original structure from the master resume. Keep it ATS-friendly (no tables in Experience, no images, no emojis).
 5. **Save to Google Drive**:
    - Call `gdrive_ensure_path` with path `"{gdrive_root_folder}/{company}/{role}"` to get the folder ID.
-   - Call `gdrive_save_text` twice: once for `resume.tex` (LaTeX resume), once for `analysis.md` (fit analysis).
+   - Call `gdrive_save_text` twice: once for `resume.md` (Markdown resume), once for `analysis.md` (fit analysis).
 6. **Reply** with:
    - Google Drive links to both files
    - Fit score (0–100) and a 3-sentence summary of key changes made

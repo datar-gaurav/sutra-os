@@ -17,7 +17,7 @@ DEFAULT_PRICING: list[tuple[str, str, float, float]] = [
     ("openai", "o1",                     0.015,   0.060),
     ("openai", "o1-mini",                0.003,   0.012),
     # Anthropic
-    ("anthropic", "claude-opus-4-6",             0.015,   0.075),
+    ("anthropic", "claude-opus-4-7",             0.015,   0.075),
     ("anthropic", "claude-sonnet-4-6",       0.003,   0.015),
     ("anthropic", "claude-haiku-4-5-20251001",      0.0008,  0.004),
     ("anthropic", "claude-3-5-sonnet-20241022",   0.003,   0.015),

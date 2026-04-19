@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Sutra Job Capture",
   "version": "1.0.0",
-  "description": "Capture LinkedIn job details and send them to your Sutra OS Resume Builder agent.",
+  "description": "Capture LinkedIn and Workday job postings and send them to your Sutra OS Resume Builder agent.",
   "permissions": [
     "activeTab",
     "storage",
@@ -25,7 +25,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.linkedin.com/jobs/view/*", "https://www.linkedin.com/jobs/collections/*", "https://www.linkedin.com/jobs/search/*"],
+      "matches": [
+        "https://www.linkedin.com/jobs/view/*",
+        "https://www.linkedin.com/jobs/collections/*",
+        "https://www.linkedin.com/jobs/search/*",
+        "https://*.myworkdayjobs.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

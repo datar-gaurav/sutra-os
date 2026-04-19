@@ -120,33 +120,12 @@ const PROVIDERS = [
     { value: "openai_compatible", label: "OpenAI Compatible" },
 ];
 
-// Anthropic has no public model-list API; keep this in sync with supported IDs.
-const ANTHROPIC_MODELS = [
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5-20251001",
-    "claude-opus-4-5",
-    "claude-sonnet-4-5",
-    "claude-3-7-sonnet-latest",
-    "claude-3-5-sonnet-latest",
-    "claude-3-5-haiku-latest",
-];
-
-const OPENAI_MODELS = [
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4o",
-    "gpt-4o-mini",
-    "o3",
-    "o4-mini",
-];
-
 async function fetchRawModelsForProvider(provider: string): Promise<string[]> {
     switch (provider) {
         case "anthropic":
-            return ANTHROPIC_MODELS;
+            return (await llmsApi.anthropicModels()).map(m => m.id);
         case "openai":
-            return OPENAI_MODELS;
+            return (await llmsApi.openaiModels()).map(m => m.id);
         case "groq":
             return (await llmsApi.groqModels()).map(m => m.id);
         case "openrouter":

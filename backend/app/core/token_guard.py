@@ -27,6 +27,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "openai/gpt-4-turbo": 128_000,
     "openai/gpt-3.5-turbo": 16_385,
     # Anthropic
+    "anthropic/claude-opus-4-7": 200_000,
     "anthropic/claude-sonnet-4-6": 200_000,
     "anthropic/claude-haiku-4-5-20251001": 200_000,
     "anthropic/claude-3-5-sonnet-20241022": 200_000,

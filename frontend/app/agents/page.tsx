@@ -19,6 +19,7 @@ import {
     X,
     Check,
     ChevronDown,
+    Copy,
 } from "lucide-react";
 import { agentsApi, chatApi, llmsApi, foldersApi, purposesApi, type Agent, type OpenRouterQuota, type AgentDailyUsage, type Folder } from "@/lib/api";
 import AgentAvatar, { AvatarPicker } from "@/components/AgentAvatar";
@@ -109,6 +110,11 @@ export default function AgentsPage() {
     async function handleDelete(id: string) {
         if (!confirm("Are you sure you want to delete this agent?")) return;
         try { await agentsApi.delete(id); await loadAgents(); } catch (err) { console.error(err); }
+    }
+
+    async function handleClone(id: string) {
+        setActionLoading(id);
+        try { await agentsApi.clone(id); await loadAgents(); } catch (err) { console.error(err); } finally { setActionLoading(null); }
     }
 
     // ─── Avatar Picker ─────────────────────────────────────────────────────────
@@ -408,6 +414,9 @@ export default function AgentsPage() {
                                     </button>
                                 )}
                                 <Link href={`/agents/${agent.id}`} className="btn-secondary px-3 py-1.5 text-xs">Edit</Link>
+                                <button onClick={() => handleClone(agent.id)} disabled={actionLoading === agent.id} className="btn-icon text-stone-400 hover:text-stone-700" title="Clone agent">
+                                    <Copy className="w-4 h-4" />
+                                </button>
                                 <button onClick={() => handleDelete(agent.id)} className="btn-icon text-stone-400 hover:text-red-500">
                                     <Trash2 className="w-4 h-4" />
                                 </button>
@@ -476,6 +485,7 @@ export default function AgentsPage() {
                                                 <button onClick={() => handleStart(agent.id)} disabled={actionLoading === agent.id} className="btn-primary px-2 py-1" title="Start"><Play className="w-3.5 h-3.5" /></button>
                                             )}
                                             <Link href={`/agents/${agent.id}`} className="btn-secondary px-2 py-1" title="Edit"><Edit2 className="w-3.5 h-3.5" /></Link>
+                                            <button onClick={() => handleClone(agent.id)} disabled={actionLoading === agent.id} className="btn-secondary px-2 py-1" title="Clone"><Copy className="w-3.5 h-3.5" /></button>
                                             <button onClick={() => handleDelete(agent.id)} className="btn-icon p-1 text-stone-400 hover:text-red-500" title="Delete"><Trash2 className="w-4 h-4" /></button>
                                         </div>
                                     </td>

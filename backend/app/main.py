@@ -529,17 +529,17 @@ async def lifespan(app: FastAPI):
                 "You are a professional resume tailoring specialist.\n\n"
                 "You have the Resume Tailoring skill attached. Follow its instructions exactly when you "
                 "receive a job opportunity.\n\n"
-                "Master resume filename: master_resume.tex\n"
+                "Master resume filename: master_resume.md\n"
                 "Google Drive root folder: Career\n\n"
                 "### Workflow\n"
-                "1. Use gdrive_search_files to find master_resume.tex, then gdrive_read_file to read it.\n"
+                "1. Use gdrive_search_files to find master_resume.md, then gdrive_read_file to read it.\n"
                 "2. Analyse the job description: extract required/preferred skills, key responsibilities, "
                 "ATS keywords, and seniority signals.\n"
                 "3. Rewrite the resume to maximise match: reorder bullets, mirror JD keywords, quantify "
                 "achievements, tailor the summary section.\n"
-                "4. Output the tailored resume in LaTeX, preserving the original structure.\n"
+                "4. Output the tailored resume in Markdown, preserving the original structure.\n"
                 "5. Call gdrive_ensure_path with path 'Career/{company}/{role}' to get the folder ID.\n"
-                "6. Save resume.tex (LaTeX) and analysis.md (fit score 0-100, top 5 strengths, top 3 gaps, "
+                "6. Save resume.md (Markdown) and analysis.md (fit score 0-100, top 5 strengths, top 3 gaps, "
                 "ATS keywords added) using gdrive_save_text. Capture the returned file URLs and IDs.\n"
                 "7. If the incoming payload includes an `application_id`, call update_job_application "
                 "with that id, the resume Drive URL + file ID, analysis Drive URL, fit_score, and "
@@ -547,9 +547,9 @@ async def lifespan(app: FastAPI):
                 "8. Reply with Drive links, fit score, and a 3-sentence summary of changes.\n\n"
                 "Rules:\n"
                 "- Never invent experience. Only rearrange and rephrase what exists.\n"
-                "- Keep LaTeX compiling: preserve all package imports and document structure.\n"
+                "- Keep Markdown clean and ATS-friendly: no tables in Experience, no images, no emojis.\n"
                 "- Use exact company and role names from the job data as folder names.\n"
-                "- If master_resume.tex is not found, ask the user to upload it to Google Drive."
+                "- If master_resume.md is not found, ask the user to upload it to Google Drive."
             )
             webhook_prompt = (
                 "New job opportunity received.\n\n"
@@ -564,7 +564,7 @@ async def lifespan(app: FastAPI):
                     name="Resume Builder",
                     description=(
                         "Tailors your master resume to any job description. "
-                        "Saves LaTeX resume + fit analysis to Google Drive under Career/{Company}/{Role}/."
+                        "Saves Markdown resume + fit analysis to Google Drive under Career/{Company}/{Role}/."
                     ),
                     system_prompt=resume_prompt,
                     llm_provider="anthropic",
@@ -581,7 +581,7 @@ async def lifespan(app: FastAPI):
             else:
                 existing_resume.description = (
                     "Tailors your master resume to any job description. "
-                    "Saves LaTeX resume + fit analysis to Google Drive under Career/{Company}/{Role}/."
+                    "Saves Markdown resume + fit analysis to Google Drive under Career/{Company}/{Role}/."
                 )
                 existing_resume.system_prompt = resume_prompt
                 existing_resume.enabled_tools = resume_tools

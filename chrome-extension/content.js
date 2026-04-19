@@ -1,12 +1,19 @@
 /**
- * Sutra Job Capture — LinkedIn content script
+ * Sutra Job Capture — content script
  *
- * LinkedIn is a React SPA with frequent DOM changes. This script uses a
- * layered approach: specific selectors → document.title parsing → structural
- * heuristics. Retries for up to 4s to handle SPA lazy-loading.
+ * Supports LinkedIn and Workday job postings. Both are SPAs with frequent
+ * DOM changes, so this script uses layered extraction (specific selectors →
+ * structural heuristics) with retries for up to 4s to handle lazy-loading.
  */
 
 "use strict";
+
+function detectSource() {
+  const host = window.location.hostname;
+  if (/linkedin\.com/i.test(host)) return "linkedin";
+  if (/myworkdayjobs\.com|workday\.com/i.test(host)) return "workday";
+  return "unknown";
+}
 
 // ── Title ─────────────────────────────────────────────────────────────────────
 
@@ -302,9 +309,121 @@ function extractPeople() {
   return out;
 }
 
+// ── Workday extractors ────────────────────────────────────────────────────────
+// Workday uses stable `data-automation-id` attributes — much more reliable
+// than class names, which are hashed per deployment.
+
+function extractWorkdayTitle() {
+  const selectors = [
+    '[data-automation-id="jobPostingHeader"]',
+    '[data-automation-id="jobTitle"]',
+    'h2[data-automation-id]',
+  ];
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = (el.innerText || el.textContent || "").trim();
+      if (text) return text;
+    }
+  }
+  const h1 = document.querySelector("main h1, main h2");
+  return h1 ? (h1.innerText || h1.textContent || "").trim() : "";
+}
+
+function extractWorkdayCompany() {
+  // Company name is rarely rendered inline on Workday postings — derive from
+  // the tenant subdomain: {company}.wdN.myworkdayjobs.com
+  const host = window.location.hostname;
+  const m = host.match(/^([^.]+)\./);
+  const fromUrl = m
+    ? m[1].replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : "";
+
+  const brand = document.querySelector(
+    '[data-automation-id="company-name"], header img[alt], [data-automation-id="tenantName"]'
+  );
+  if (brand) {
+    const t = (brand.getAttribute("alt") || brand.innerText || "").trim();
+    if (t && t.length < 80 && !/workday/i.test(t)) return t;
+  }
+  return fromUrl;
+}
+
+function extractWorkdayLocation() {
+  const selectors = [
+    '[data-automation-id="locations"]',
+    '[data-automation-id="locationsOfJob"]',
+    '[data-automation-id="jobPostingLocation"]',
+    '[data-automation-id="location"]',
+  ];
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = (el.innerText || el.textContent || "").trim();
+      if (text) return text.split("\n").map((s) => s.trim()).filter(Boolean).join(", ");
+    }
+  }
+  return "";
+}
+
+function extractWorkdaySalary() {
+  const selectors = [
+    '[data-automation-id="compensation"]',
+    '[data-automation-id="salary"]',
+    '[data-automation-id="payRange"]',
+    '[data-automation-id="jobPostingCompensation"]',
+  ];
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const t = (el.innerText || el.textContent || "").trim();
+      if (t) return t;
+    }
+  }
+
+  // Fallback: scan the description for an explicit pay range
+  const desc = document.querySelector('[data-automation-id="jobPostingDescription"]');
+  if (desc) {
+    const text = desc.innerText || desc.textContent || "";
+    const m = text.match(/\$[\d,]+(?:\.\d+)?\s*(?:[kK])?\s*[-–—]\s*\$?[\d,]+(?:\.\d+)?\s*(?:[kK])?/);
+    if (m) return m[0].trim();
+  }
+  return "";
+}
+
+function extractWorkdayDescription() {
+  const el = document.querySelector('[data-automation-id="jobPostingDescription"]');
+  if (el) {
+    const text = domToText(el);
+    if (text.length > 100) return text;
+  }
+  const main = document.querySelector("main");
+  if (main) {
+    const text = domToText(main);
+    if (text.length > 100) return text.slice(0, 8000);
+  }
+  return "";
+}
+
 // ── Main scrape ────────────────────────────────────────────────────────────────
 
 function scrapeJob() {
+  const source = detectSource();
+
+  if (source === "workday") {
+    return {
+      job_title:       extractWorkdayTitle(),
+      company:         extractWorkdayCompany(),
+      location:        extractWorkdayLocation(),
+      salary:          extractWorkdaySalary(),
+      job_description: extractWorkdayDescription(),
+      people:          [],
+      job_url:         window.location.href.split("?")[0],
+      source:          "workday",
+      captured_at:     new Date().toISOString(),
+    };
+  }
+
   return {
     job_title:       extractTitle(),
     company:         extractCompany(),

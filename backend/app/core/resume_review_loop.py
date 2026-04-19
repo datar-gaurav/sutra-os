@@ -162,7 +162,7 @@ def _format_feedback_for_builder(feedback: dict, round_num: int, max_rounds: int
         f"Reviewer status: {feedback.get('status', 'needs_revision')}\n\n"
         f"{json.dumps(feedback, indent=2)}\n\n"
         "Follow REVISION MODE. Decide ACCEPT / PARTIAL / REJECT per item, "
-        "revise resume.tex in place on Drive, and append a revision log to "
+        "revise resume.md in place on Drive, and append a revision log to "
         "analysis.md. Then reply with a short round summary."
     )
 
@@ -195,8 +195,12 @@ def _build_review_prompt(jd: str, master_resume: str, draft: str, prior_rounds: 
     )
 
 
-_TEX_RE = re.compile(r"<<<RESUME_TEX_BEGIN>>>(.*?)<<<RESUME_TEX_END>>>", re.DOTALL)
-_MASTER_RE = re.compile(r"<<<MASTER_TEX_BEGIN>>>(.*?)<<<MASTER_TEX_END>>>", re.DOTALL)
+_TEX_RE = re.compile(
+    r"<<<RESUME_(?:MD|TEX)_BEGIN>>>(.*?)<<<RESUME_(?:MD|TEX)_END>>>", re.DOTALL
+)
+_MASTER_RE = re.compile(
+    r"<<<MASTER_(?:MD|TEX)_BEGIN>>>(.*?)<<<MASTER_(?:MD|TEX)_END>>>", re.DOTALL
+)
 
 
 def _extract_tailored_tex(builder_output: str) -> str:

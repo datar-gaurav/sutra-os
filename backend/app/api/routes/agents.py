@@ -425,6 +425,55 @@ async def restart_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
     return result
 
 
+@router.post("/{agent_id}/clone", response_model=AgentResponse, status_code=201)
+async def clone_agent(
+    request: Request,
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Clone an agent, creating a stopped copy with 'Copy of' prefix."""
+    agent = await db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    clone = Agent(
+        name=f"Copy of {agent.name}",
+        description=agent.description,
+        avatar_url=agent.avatar_url,
+        system_prompt=agent.system_prompt,
+        temperature=agent.temperature,
+        max_tokens=agent.max_tokens,
+        purpose_id=agent.purpose_id,
+        llm_provider=agent.llm_provider,
+        llm_model=agent.llm_model,
+        enabled_tools=agent.enabled_tools,
+        folder_id=agent.folder_id,
+        slack_channel_id=agent.slack_channel_id,
+        telegram_enabled=agent.telegram_enabled,
+        telegram_chat_id=agent.telegram_chat_id,
+        online_notification_enabled=agent.online_notification_enabled,
+        metadata_=agent.metadata_ or {},
+        auto_approve_below=agent.auto_approve_below,
+        max_tool_calls_per_run=agent.max_tool_calls_per_run,
+        max_tokens_per_day=agent.max_tokens_per_day,
+        secondary_provider=agent.secondary_provider,
+        secondary_model=agent.secondary_model,
+        fallback_provider=agent.fallback_provider,
+        fallback_model=agent.fallback_model,
+    )
+    db.add(clone)
+    await db.flush()
+    await db.refresh(clone)
+    await record_audit(
+        db, action="agent.clone", actor_id=current_user.id,
+        resource_type="agent", resource_id=clone.id,
+        details={"name": clone.name, "cloned_from": agent_id},
+        ip_address=request.client.host if request.client else None,
+    )
+    return AgentResponse.model_validate(clone)
+
+
 @router.post("/{agent_id}/archive", response_model=AgentResponse)
 async def archive_agent(
     request: Request,

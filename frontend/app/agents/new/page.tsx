@@ -338,7 +338,7 @@ export default function NewAgentPage() {
                             <input
                                 type="number"
                                 value={maxTokens}
-                                onChange={(e) => setMaxTokens(parseInt(e.target.value))}
+                                onChange={(e) => setMaxTokens(parseInt(e.target.value) || 0)}
                                 className="input"
                                 min={1}
                                 max={128000}

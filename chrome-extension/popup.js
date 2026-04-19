@@ -50,9 +50,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Detect active tab
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const isLinkedInJob = tab && tab.url && /linkedin\.com\/jobs\//i.test(tab.url);
+  const isJobPage = tab && tab.url && (
+    /linkedin\.com\/jobs\//i.test(tab.url) ||
+    /myworkdayjobs\.com\//i.test(tab.url)
+  );
 
-  if (!isLinkedInJob) {
+  if (!isJobPage) {
     showView("view-not-linkedin");
     return;
   }

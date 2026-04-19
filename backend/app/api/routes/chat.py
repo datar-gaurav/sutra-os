@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, func as sa_func
+from sqlalchemy import delete, select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import ChatRequest, ChatResponse
@@ -360,6 +360,26 @@ async def list_conversations(agent_id: str, db: AsyncSession = Depends(get_db)):
         }
         for c in conversations
     ]
+
+
+@router.delete("/conversations/{agent_id}/{conversation_id}")
+async def delete_conversation(
+    agent_id: str, conversation_id: str, db: AsyncSession = Depends(get_db)
+):
+    """Delete a conversation and all its messages."""
+    result = await db.execute(
+        select(Conversation).where(
+            Conversation.id == conversation_id,
+            Conversation.agent_id == agent_id,
+        )
+    )
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+    await db.delete(conv)
+    await db.commit()
+    return {"status": "deleted"}
 
 
 @router.get("/conversations/{agent_id}/{conversation_id}/messages")

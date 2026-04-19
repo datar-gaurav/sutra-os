@@ -414,6 +414,95 @@ class LLMRegistry:
             logger.warning(f"Failed to fetch Groq models: {e}")
             return []
 
+    async def fetch_anthropic_models(self) -> list[dict]:
+        """Fetch available models from the Anthropic API.
+
+        Filters out dated aliases (e.g. `claude-opus-4-5-20251101`) — only
+        stable ids like `claude-opus-4-7` are returned, keeping the picker clean.
+        """
+        import os as _os
+        import re as _re
+        api_key = (
+            self._providers.get("anthropic", {}).get("api_key", "")
+            or _os.environ.get("ANTHROPIC_API_KEY", "")
+            or settings.anthropic_api_key
+        )
+        if not api_key:
+            logger.warning("No Anthropic API key configured — cannot fetch model list.")
+            return []
+        dated_suffix = _re.compile(r"-\d{8}$")
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers={
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                models = []
+                for m in data.get("data", []):
+                    mid = m.get("id", "")
+                    if not mid or dated_suffix.search(mid):
+                        continue
+                    models.append({
+                        "id": mid,
+                        "name": m.get("display_name") or mid,
+                        "context_length": 200000,
+                        "description": "",
+                    })
+                models.sort(key=lambda x: x["id"], reverse=True)
+                return models
+        except Exception as e:
+            logger.warning(f"Failed to fetch Anthropic models: {e}")
+            return []
+
+    async def fetch_openai_models(self) -> list[dict]:
+        """Fetch available chat-capable models from the OpenAI API."""
+        import os as _os
+        api_key = (
+            self._providers.get("openai", {}).get("api_key", "")
+            or _os.environ.get("OPENAI_API_KEY", "")
+            or settings.openai_api_key
+        )
+        if not api_key:
+            logger.warning("No OpenAI API key configured — cannot fetch model list.")
+            return []
+        # Skip non-chat model families (embeddings, tts, stt, moderation, image)
+        skip_prefixes = (
+            "text-embedding", "text-moderation", "omni-moderation",
+            "whisper", "tts", "dall-e", "davinci", "babbage", "ada",
+        )
+        chat_prefixes = ("gpt-", "o1", "o3", "o4", "chatgpt")
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                response.raise_for_status()
+                data = response.json()
+                models = []
+                for m in data.get("data", []):
+                    mid = m.get("id", "")
+                    if not mid or mid.startswith(skip_prefixes):
+                        continue
+                    if not mid.startswith(chat_prefixes):
+                        continue
+                    models.append({
+                        "id": mid,
+                        "name": mid,
+                        "context_length": 0,
+                        "description": "",
+                    })
+                models.sort(key=lambda x: x["id"])
+                return models
+        except Exception as e:
+            logger.warning(f"Failed to fetch OpenAI models: {e}")
+            return []
+
     async def fetch_nvidia_nim_models(self) -> list[dict]:
         """Fetch available models from the NVIDIA NIM API."""
         import os as _os

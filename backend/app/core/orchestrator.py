@@ -226,6 +226,7 @@ class Orchestrator:
         routed_model = None
         refresh_hours = 24
         excluded_models: set[tuple[str, str]] = set()
+        last_runtime_error: Exception | None = None
         max_fallback_attempts = 5
 
         for attempt in range(max_fallback_attempts):
@@ -237,9 +238,13 @@ class Orchestrator:
                     )
                 )
             except RuntimeError as e:
-                if excluded_models:
-                    # All models exhausted after fallback attempts
-                    return {"output": str(e), "error": True}
+                # If a downstream call failed earlier, surface the real cause
+                # instead of the router's generic "skipped (failed at runtime)".
+                if last_runtime_error is not None:
+                    return {
+                        "output": f"{e} — underlying error: {last_runtime_error}",
+                        "error": True,
+                    }
                 return {"output": str(e), "error": True}
 
             if not executor:
@@ -349,6 +354,7 @@ class Orchestrator:
                         f"falling back to next model (attempt {attempt + 1})"
                     )
                     excluded_models.add((routed_provider, routed_model))
+                    last_runtime_error = e
                     continue
 
                 latency_ms = int((time.monotonic() - start_ms) * 1000)
@@ -389,6 +395,7 @@ class Orchestrator:
                         f"falling back to next model (attempt {attempt + 1})"
                     )
                     excluded_models.add((routed_provider, routed_model))
+                    last_runtime_error = e
                     continue
 
                 # Catch 413 / context-too-large and retry with aggressively trimmed context
@@ -482,6 +489,7 @@ class Orchestrator:
         routed_model = None
         refresh_hours = 24
         excluded_models: set[tuple[str, str]] = set()
+        last_runtime_error: Exception | None = None
         max_fallback_attempts = 5
 
         for attempt in range(max_fallback_attempts):
@@ -493,7 +501,13 @@ class Orchestrator:
                     )
                 )
             except RuntimeError as e:
-                yield {"type": "error", "content": str(e)}
+                if last_runtime_error is not None:
+                    yield {
+                        "type": "error",
+                        "content": f"{e} — underlying error: {last_runtime_error}",
+                    }
+                else:
+                    yield {"type": "error", "content": str(e)}
                 return
 
             if not executor:
@@ -596,6 +610,7 @@ class Orchestrator:
                         f"falling back to next model (attempt {attempt + 1})"
                     )
                     excluded_models.add((routed_provider, routed_model))
+                    last_runtime_error = e
                     continue
 
                 latency_ms = int((time.monotonic() - start_ms) * 1000)
@@ -622,6 +637,7 @@ class Orchestrator:
                         f"falling back to next model (attempt {attempt + 1})"
                     )
                     excluded_models.add((routed_provider, routed_model))
+                    last_runtime_error = e
                     # Reset any partial output already streamed
                     if full_output:
                         yield {"type": "fallback", "content": f"Switching to backup model..."}

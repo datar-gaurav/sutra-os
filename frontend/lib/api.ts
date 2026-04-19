@@ -286,6 +286,8 @@ export const agentsApi = {
         apiFetch<{ status: string }>(`/api/agents/${id}/stop`, { method: "POST" }),
     restart: (id: string) =>
         apiFetch<{ status: string }>(`/api/agents/${id}/restart`, { method: "POST" }),
+    clone: (id: string) =>
+        apiFetch<Agent>(`/api/agents/${id}/clone`, { method: "POST" }),
 };
 
 // ─── Folders ────────────────────────────────────────────────────────────────
@@ -318,6 +320,8 @@ export const llmsApi = {
     googleModels: () => apiFetch<GeminiModel[]>("/api/llms/google/models"),
     clodModels: () => apiFetch<ClodModel[]>("/api/llms/clod/models"),
     nvidiaModels: () => apiFetch<NvidiaModel[]>("/api/llms/nvidia_nim/models"),
+    anthropicModels: () => apiFetch<{ id: string; name: string }[]>("/api/llms/anthropic/models"),
+    openaiModels: () => apiFetch<{ id: string; name: string }[]>("/api/llms/openai/models"),
     openRouterQuota: () => apiFetch<OpenRouterQuota>("/api/llms/openrouter/quota"),
 };
 
@@ -345,6 +349,11 @@ export const chatApi = {
 
     messages: (agentId: string, conversationId: string) =>
         apiFetch<ChatMessage[]>(`/api/chat/conversations/${agentId}/${conversationId}/messages`),
+
+    deleteConversation: (agentId: string, conversationId: string) =>
+        apiFetch<{ status: string }>(`/api/chat/conversations/${agentId}/${conversationId}`, {
+            method: "DELETE",
+        }),
 
     dailyUsage: (agentId: string) =>
         apiFetch<AgentDailyUsage>(`/api/chat/usage/${agentId}`),

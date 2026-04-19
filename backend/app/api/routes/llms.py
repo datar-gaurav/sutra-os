@@ -184,6 +184,22 @@ async def openrouter_quota():
     return quota
 
 
+# ─── Anthropic Discovery ───────────────────────────────────────────────────────
+
+@router.get("/anthropic/models")
+async def list_anthropic_models():
+    """Fetch available models from the Anthropic API."""
+    return await llm_registry.fetch_anthropic_models()
+
+
+# ─── OpenAI Discovery ──────────────────────────────────────────────────────────
+
+@router.get("/openai/models")
+async def list_openai_models():
+    """Fetch available chat-capable models from the OpenAI API."""
+    return await llm_registry.fetch_openai_models()
+
+
 # ─── NVIDIA NIM Discovery ──────────────────────────────────────────────────────
 
 @router.get("/nvidia_nim/models", response_model=list[GroqModel])

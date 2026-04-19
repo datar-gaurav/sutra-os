@@ -206,6 +206,14 @@ export default function ChatPage() {
     const [searchQuery, setSearchQuery] = useState("");
     const [user, setUser] = useState<{ username: string; role: string } | null>(null);
     const [sidebarOpen, setSidebarOpen] = useState(true);
+    const [convMenuOpen, setConvMenuOpen] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!convMenuOpen) return;
+        const handler = () => setConvMenuOpen(null);
+        document.addEventListener("click", handler);
+        return () => document.removeEventListener("click", handler);
+    }, [convMenuOpen]);
 
     // Active project
     const [activeProject, setActiveProject] = useState<Project | null>(null);
@@ -347,6 +355,7 @@ export default function ChatPage() {
     }, [selectedAgent]);
 
     const handleSelectConversation = (agentId: string, conversationId: string) => {
+        setConvMenuOpen(null);
         const agent = agents.find(a => a.id === agentId);
         if (agent) {
             setSelectedAgent(agent);
@@ -361,6 +370,19 @@ export default function ChatPage() {
             else next.add(agentId);
             return next;
         });
+    };
+
+    const handleDeleteConversation = async (agentId: string, conversationId: string) => {
+        setConvMenuOpen(null);
+        await chatApi.deleteConversation(agentId, conversationId);
+        if (activeConversationId === conversationId) {
+            setActiveConversationId(null);
+            setMessages([]);
+        }
+        setAgentConversations(prev => ({
+            ...prev,
+            [agentId]: (prev[agentId] || []).filter(c => c.id !== conversationId),
+        }));
     };
 
     async function handleSend() {
@@ -509,7 +531,7 @@ export default function ChatPage() {
             const convs = agentConversations[agent.id] || [];
             const filtered = convs.filter(c => c.title.toLowerCase().includes(searchQuery.toLowerCase()));
             return { ...agent, conversations: filtered };
-        }).filter(a => a.conversations.length > 0 || searchQuery === "");
+        }).filter(a => a.conversations.length > 0);
     }, [agents, agentConversations, searchQuery]);
 
     return (
@@ -570,24 +592,39 @@ export default function ChatPage() {
                                             <p className="text-xs text-stone-400 py-1 pl-4">No threads</p>
                                         ) : (
                                             agent.conversations.map((conv) => (
-                                                <button
-                                                    key={conv.id}
-                                                    onClick={() => handleSelectConversation(agent.id, conv.id)}
-                                                    className={`w-full group flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all ${
-                                                        activeConversationId === conv.id
-                                                        ? "bg-stone-100 border border-stone-200"
-                                                        : "hover:bg-stone-50 border border-transparent"
-                                                    }`}
-                                                >
-                                                    <div className="flex-1 min-w-0">
-                                                        <p className={`text-sm truncate ${activeConversationId === conv.id ? "font-medium text-stone-800" : "text-stone-600"}`}>
-                                                            {conv.title || "Untitled Chat"}
-                                                        </p>
-                                                    </div>
-                                                    <div className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-stone-200 rounded transition-opacity">
-                                                        <MoreVertical className="w-3 h-3 text-stone-400" />
-                                                    </div>
-                                                </button>
+                                                <div key={conv.id} className="relative">
+                                                    <button
+                                                        onClick={() => handleSelectConversation(agent.id, conv.id)}
+                                                        className={`w-full group flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all ${
+                                                            activeConversationId === conv.id
+                                                            ? "bg-stone-100 border border-stone-200"
+                                                            : "hover:bg-stone-50 border border-transparent"
+                                                        }`}
+                                                    >
+                                                        <div className="flex-1 min-w-0">
+                                                            <p className={`text-sm truncate ${activeConversationId === conv.id ? "font-medium text-stone-800" : "text-stone-600"}`}>
+                                                                {conv.title || "Untitled Chat"}
+                                                            </p>
+                                                        </div>
+                                                        <div
+                                                            className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-stone-200 rounded transition-opacity"
+                                                            onClick={(e) => { e.stopPropagation(); setConvMenuOpen(convMenuOpen === conv.id ? null : conv.id); }}
+                                                        >
+                                                            <MoreVertical className="w-3 h-3 text-stone-400" />
+                                                        </div>
+                                                    </button>
+                                                    {convMenuOpen === conv.id && (
+                                                        <div className="absolute right-0 top-full mt-0.5 z-50 bg-white border border-stone-200 rounded-lg shadow-lg py-1 min-w-[120px]">
+                                                            <button
+                                                                onClick={() => handleDeleteConversation(agent.id, conv.id)}
+                                                                className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                                                            >
+                                                                <Trash2 className="w-3.5 h-3.5" />
+                                                                Delete
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
                                             ))
                                         )}
                                     </div>

@@ -8,9 +8,22 @@ from langchain_core.runnables import RunnableLambda
 from langgraph.prebuilt import create_react_agent
 
 from app.core.llm_registry import llm_registry
+from app.core.token_guard import get_context_limit, trim_messages_to_fit
 from app.tools.registry import get_tools_by_ids
 
 logger = logging.getLogger(__name__)
+
+
+def _make_trimming_prompt(system_prompt: str, max_tokens: int):
+    """Return a LangGraph prompt callable that prepends the system message and trims to fit."""
+    sys_msg = SystemMessage(content=system_prompt)
+
+    def _prompt(state) -> list:
+        messages = state["messages"] if isinstance(state, dict) else state.messages
+        all_msgs = [sys_msg] + list(messages)
+        return trim_messages_to_fit(all_msgs, max_tokens)
+
+    return _prompt
 
 
 def _build_simple_chain(llm, system_prompt: str):
@@ -170,10 +183,15 @@ def build_agent(agent_config: dict[str, Any], llm=None, actual_provider: str | N
     tools = get_tools_by_ids(all_tool_ids, agent_id=agent_config.get("id"))
 
     # 4. Create the agent using LangGraph
+    # Build a trimming prompt that caps accumulated ReAct messages to the model's context window.
+    # This prevents tool outputs from overflowing the context during multi-step reasoning.
+    max_tokens = get_context_limit(effective_provider, agent_config.get("llm_model", ""))
+    trimming_prompt = _make_trimming_prompt(final_prompt, max_tokens)
+
     agent = create_react_agent(
         model=llm,
         tools=tools if tools else [],
-        prompt=final_prompt,
+        prompt=trimming_prompt,
     )
 
     logger.info(
