@@ -21,6 +21,7 @@ from app.core.token_guard import (
     get_context_limit,
     trim_messages_to_fit,
 )
+from app.core.tracing import log_text, set_attrs, span
 from app.core.watchdog import watchdog
 from app.middleware.correlation import get_request_id
 
@@ -457,7 +458,35 @@ class Orchestrator:
         chat_history: list[dict] | None = None,
         db: AsyncSession | None = None,
     ):
-        """Stream a response from an agent, yielding chunks."""
+        """Stream a response from an agent, yielding chunks.
+
+        Opens a root MLflow span for the entire chat turn so that LangChain
+        autolog spans (per-LLM-call) and LangGraph node spans nest underneath
+        a single trace. The actual streaming logic lives in
+        ``_stream_message_impl`` to keep the span context manager scope
+        readable; ``_impl`` may set additional attributes on ``root_span``.
+        """
+        with span(
+            "orchestrator.chat_turn",
+            agent_id=str(agent_id),
+            request_id=get_request_id(),
+            user_message_len=len(message),
+        ) as root_span:
+            log_text("user_message.txt", message)
+            async for chunk in self._stream_message_impl(
+                agent_id, message, chat_history, db, root_span
+            ):
+                yield chunk
+
+    async def _stream_message_impl(
+        self,
+        agent_id: str,
+        message: str,
+        chat_history: list[dict] | None = None,
+        db: AsyncSession | None = None,
+        root_span: Any = None,
+    ):
+        """Inner streaming logic. Wrapped by ``stream_message`` for tracing."""
         info = agent_manager.get_info(agent_id)
         purpose_id = info.get("purpose_id") if info else None
 
@@ -597,6 +626,18 @@ class Orchestrator:
                         latency_ms=latency_ms, total_tokens=cb.tokens_used or None,
                         input_tokens=estimated_input_tokens,
                     )
+                # MLflow trace: final response payload + summary attrs
+                log_text("agent_response.txt", full_output)
+                set_attrs(
+                    root_span,
+                    provider=routed_provider,
+                    model=routed_model,
+                    latency_ms=latency_ms,
+                    input_tokens=estimated_input_tokens,
+                    total_tokens=cb.tokens_used or None,
+                    tool_calls=len(tool_calls),
+                    response_len=len(full_output),
+                )
                 # Record heartbeat for watchdog
                 watchdog.heartbeat(agent_id)
                 yield {"type": "done", "content": ""}

@@ -164,6 +164,17 @@ class Settings(BaseSettings):
     alert_default_cooldown_minutes: int = 30
     alert_auto_resolve_enabled: str = "true"
 
+    # ── MLflow / LLMOps Tracing ───────────────────────────────────────────
+    mlflow_enabled: bool = False
+    mlflow_tracking_uri: str = "http://mlflow:5000"
+    mlflow_experiment: str = "sutra-agent-runs"
+    rag_eval_enabled: bool = False
+    # Judge model used by the LLM-as-judge RAG eval loop. Only invoked when
+    # rag_eval_enabled=True AND the eval CLI/Celery task is explicitly run.
+    # Format: "<provider>/<model>". Kept cheap by default.
+    rag_eval_judge_provider: str = "anthropic"
+    rag_eval_judge_model: str = "claude-haiku-4-5-20251001"
+
     # ── Rate Limits ────────────────────────────────────────────────────────
     rate_limit_chat: str = "200/hour"
     rate_limit_auth_login: str = "10/hour"

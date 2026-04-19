@@ -39,6 +39,7 @@ backend/.ssh/
 backend/.cache/
 backend/.pki/
 backend/data/
+backend/.config/
 
 # AI context
 CLAUDE.md

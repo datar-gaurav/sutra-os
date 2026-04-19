@@ -3,11 +3,13 @@
 import json
 import logging
 import math
+import time
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.embeddings import embedding_service
+from app.core.tracing import set_attrs, span
 from app.models.knowledge_base import Document, DocumentChunk, DocumentSourceType, DocumentStatus
 
 logger = logging.getLogger(__name__)
@@ -161,47 +163,67 @@ async def search(
     Each dict has: chunk_id, content, score, document_id, document_title,
     source_url, knowledge_base_id.
     """
-    stmt = select(DocumentChunk)
-    if kb_ids:
-        stmt = stmt.where(DocumentChunk.knowledge_base_id.in_(kb_ids))
+    t0 = time.perf_counter()
+    with span(
+        "rag.retrieve",
+        query_len=len(query),
+        kb_count=len(kb_ids) if kb_ids else 0,
+        top_k=top_k,
+        min_score=min_score,
+    ) as s:
+        stmt = select(DocumentChunk)
+        if kb_ids:
+            stmt = stmt.where(DocumentChunk.knowledge_base_id.in_(kb_ids))
 
-    result = await db.execute(stmt)
-    chunks = result.scalars().all()
-    if not chunks:
-        return []
+        result = await db.execute(stmt)
+        chunks = result.scalars().all()
+        if not chunks:
+            set_attrs(s, corpus_size=0, returned=0, latency_ms=int((time.perf_counter() - t0) * 1000))
+            return []
 
-    query_embedding = await embedding_service.aembed(query)
+        query_embedding = await embedding_service.aembed(query)
+        used_embeddings = bool(query_embedding)
 
-    scored: list[tuple[float, DocumentChunk]] = []
-    for chunk in chunks:
-        if query_embedding and chunk.embedding:
-            chunk_emb = json.loads(chunk.embedding)
-            score = _cosine_similarity(query_embedding, chunk_emb)
-        else:
-            score = _keyword_score(query, chunk.content)
-        scored.append((score, chunk))
+        scored: list[tuple[float, DocumentChunk]] = []
+        for chunk in chunks:
+            if query_embedding and chunk.embedding:
+                chunk_emb = json.loads(chunk.embedding)
+                score = _cosine_similarity(query_embedding, chunk_emb)
+            else:
+                score = _keyword_score(query, chunk.content)
+            scored.append((score, chunk))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top = [(s, c) for s, c in scored[:top_k] if s >= min_score]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = [(s_, c) for s_, c in scored[:top_k] if s_ >= min_score]
 
-    # Enrich with document metadata (batch fetch unique doc IDs)
-    doc_ids = list({c.document_id for _, c in top})
-    docs = {}
-    for doc_id in doc_ids:
-        doc = await db.get(Document, doc_id)
-        if doc:
-            docs[doc_id] = doc
+        # Enrich with document metadata (batch fetch unique doc IDs)
+        doc_ids = list({c.document_id for _, c in top})
+        docs = {}
+        for doc_id in doc_ids:
+            doc = await db.get(Document, doc_id)
+            if doc:
+                docs[doc_id] = doc
 
-    return [
-        {
-            "chunk_id": chunk.id,
-            "content": chunk.content,
-            "score": round(score, 4),
-            "document_id": chunk.document_id,
-            "document_title": docs.get(chunk.document_id, type("", (), {"title": "Unknown"})()).title
-            if chunk.document_id in docs else "Unknown",
-            "source_url": docs[chunk.document_id].source_url if chunk.document_id in docs else None,
-            "knowledge_base_id": chunk.knowledge_base_id,
-        }
-        for score, chunk in top
-    ]
+        out = [
+            {
+                "chunk_id": chunk.id,
+                "content": chunk.content,
+                "score": round(score, 4),
+                "document_id": chunk.document_id,
+                "document_title": docs.get(chunk.document_id, type("", (), {"title": "Unknown"})()).title
+                if chunk.document_id in docs else "Unknown",
+                "source_url": docs[chunk.document_id].source_url if chunk.document_id in docs else None,
+                "knowledge_base_id": chunk.knowledge_base_id,
+            }
+            for score, chunk in top
+        ]
+
+        set_attrs(
+            s,
+            corpus_size=len(chunks),
+            returned=len(out),
+            top_score=round(top[0][0], 4) if top else 0.0,
+            used_embeddings=used_embeddings,
+            latency_ms=int((time.perf_counter() - t0) * 1000),
+        )
+        return out

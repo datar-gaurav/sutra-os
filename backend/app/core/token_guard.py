@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
+from app.core.tracing import set_attrs, span
+
 if TYPE_CHECKING:
     pass
 
@@ -99,6 +101,11 @@ def trim_messages_to_fit(
     if not messages:
         return messages
 
+    # Skip span creation in the common no-op case (already fits) to avoid noise.
+    initial_tokens = estimate_messages_tokens(messages)
+    if initial_tokens <= max_tokens:
+        return messages
+
     # Identify protected messages
     first_system_idx = None
     last_human_idx = None
@@ -108,6 +115,30 @@ def trim_messages_to_fit(
         if isinstance(m, HumanMessage):
             last_human_idx = i
 
+    with span(
+        "token_guard.trim",
+        initial_tokens=initial_tokens,
+        max_tokens=max_tokens,
+        initial_msg_count=len(messages),
+    ) as _trim_span:
+        trimmed = _trim_impl(messages, max_tokens, first_system_idx)
+        final_tokens = estimate_messages_tokens(trimmed)
+        set_attrs(
+            _trim_span,
+            final_tokens=final_tokens,
+            final_msg_count=len(trimmed),
+            dropped_msg_count=len(messages) - len(trimmed),
+            fit_after_trim=final_tokens <= max_tokens,
+        )
+        return trimmed
+
+
+def _trim_impl(
+    messages: list[BaseMessage],
+    max_tokens: int,
+    first_system_idx: int | None,
+) -> list[BaseMessage]:
+    """Actual trim logic extracted so the tracing span can wrap it cleanly."""
     # Work on a mutable copy
     result = list(messages)
 
@@ -159,25 +190,39 @@ def trim_messages_to_fit(
 
 def emergency_trim(messages: list[BaseMessage], max_history: int = 5) -> list[BaseMessage]:
     """Aggressive trim for 413 recovery: keep system prompt + last N history + user message."""
-    system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
-    history = [m for m in messages if isinstance(m, (HumanMessage, AIMessage))]
+    with span(
+        "token_guard.emergency_trim",
+        reason="413_recovery",
+        initial_msg_count=len(messages),
+        initial_tokens=estimate_messages_tokens(messages),
+        max_history=max_history,
+    ) as _e_span:
+        system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+        history = [m for m in messages if isinstance(m, (HumanMessage, AIMessage))]
 
-    # Keep only the last user message and up to max_history preceding messages
-    if history:
-        last_human = history[-1] if isinstance(history[-1], HumanMessage) else None
-        preceding = history[:-1] if last_human else history
-        kept_history = preceding[-max_history:]
-        if last_human:
-            kept_history.append(last_human)
-    else:
-        kept_history = []
+        # Keep only the last user message and up to max_history preceding messages
+        if history:
+            last_human = history[-1] if isinstance(history[-1], HumanMessage) else None
+            preceding = history[:-1] if last_human else history
+            kept_history = preceding[-max_history:]
+            if last_human:
+                kept_history.append(last_human)
+        else:
+            kept_history = []
 
-    # Keep only the first system message, truncated
-    kept_system = []
-    if system_msgs:
-        content = system_msgs[0].content
-        if isinstance(content, str) and len(content) > 2000:
-            content = content[:2000] + "\n\n[Truncated for recovery]"
-        kept_system = [SystemMessage(content=content)]
+        # Keep only the first system message, truncated
+        kept_system = []
+        if system_msgs:
+            content = system_msgs[0].content
+            if isinstance(content, str) and len(content) > 2000:
+                content = content[:2000] + "\n\n[Truncated for recovery]"
+            kept_system = [SystemMessage(content=content)]
 
-    return kept_system + kept_history
+        result = kept_system + kept_history
+        set_attrs(
+            _e_span,
+            final_msg_count=len(result),
+            final_tokens=estimate_messages_tokens(result),
+            dropped_msg_count=len(messages) - len(result),
+        )
+        return result

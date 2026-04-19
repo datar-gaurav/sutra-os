@@ -3,6 +3,8 @@
 import logging
 from langchain_core.tools import tool
 
+from app.core.tracing import set_attrs, span
+
 logger = logging.getLogger(__name__)
 
 @tool
@@ -92,15 +94,24 @@ async def ask_agent_async(agent_name: str, message: str) -> str:
         return f"Error: Agent '{agent_name}' is not running. Available running agents: {', '.join(filter(None, v_agents))}."
         
     # 2. Route the message to the target agent
-    try:
-        response = await orchestrator.route_message(
-            agent_id=agent_id,
-            message=message
-        )
-        return response.get("output", "Error: The agent did not return a response.")
-    except Exception as e:
-        logger.error(f"Error during agent handoff to {agent_name}: {e}")
-        return f"Error communicating with agent '{agent_name}': {str(e)}"
+    with span(
+        "ask_agent.delegate",
+        child_agent=agent_name,
+        child_agent_id=str(agent_id),
+        prompt_len=len(message),
+    ) as s:
+        try:
+            response = await orchestrator.route_message(
+                agent_id=agent_id,
+                message=message,
+            )
+            output = response.get("output", "Error: The agent did not return a response.")
+            set_attrs(s, response_len=len(output), ok=True)
+            return output
+        except Exception as e:
+            logger.error(f"Error during agent handoff to {agent_name}: {e}")
+            set_attrs(s, ok=False, error=str(e)[:500])
+            return f"Error communicating with agent '{agent_name}': {str(e)}"
 
 class DiscussWithAgentInput(BaseModel):
     agent_name: str = Field(description="The exact name of the target agent.")

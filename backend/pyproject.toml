@@ -51,6 +51,7 @@ dependencies = [
     "pypdf>=4.0.0",
     "pytrends>=4.9.0",
     "docker>=7.0.0",
+    "mlflow>=3.0.0",
 ]
 
 [project.scripts]

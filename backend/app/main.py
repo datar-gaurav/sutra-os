@@ -96,6 +96,13 @@ async def lifespan(app: FastAPI):
     # Security startup checks (strict=True in production)
     run_startup_checks(strict=not settings.debug)
 
+    # MLflow tracing — failure-isolated, no-ops if MLFLOW_ENABLED=false or unreachable
+    try:
+        from app.core.tracing import init_tracing
+        init_tracing()
+    except Exception as e:
+        logger.warning(f"Tracing init wrapper failed: {e}")
+
     # Create database tables (dev mode — use Alembic migrations in production)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

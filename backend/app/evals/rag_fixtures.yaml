@@ -1,0 +1,34 @@
+# RAG eval fixtures — editable by hand.
+#
+# Each item is one test case. Fields:
+#   id          : short stable identifier (used as MLflow tag)
+#   query       : the user question fed into rag_service.search
+#   kb_ids      : optional list of knowledge_base IDs to restrict search to.
+#                 null or empty = search across all KBs.
+#   top_k       : how many chunks to retrieve (default 5)
+#   notes       : free-form human note; shown in the eval report, NOT sent to the judge
+#
+# The judge scores each case on:
+#   - retrieval_relevance: 1-5 (did the retrieved chunks contain info to answer?)
+#   - groundedness      : 1-5 (could a correct answer be composed strictly from the chunks?)
+#
+# Replace these with queries that matter for your own KBs.
+
+cases:
+  - id: sample-01
+    query: "What is Sutra OS?"
+    kb_ids: null
+    top_k: 5
+    notes: "Sanity check — expects retrieval to surface project-overview docs if any are ingested."
+
+  - id: sample-02
+    query: "How does the smart router pick a model?"
+    kb_ids: null
+    top_k: 5
+    notes: "Architecture lookup — tests whether code-level docs are retrievable."
+
+  - id: sample-03
+    query: "What tools can agents call?"
+    kb_ids: null
+    top_k: 5
+    notes: "Capability discovery — broad-coverage query."

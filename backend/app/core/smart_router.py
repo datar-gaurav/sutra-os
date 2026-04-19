@@ -5,6 +5,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.tracing import set_attrs, span
 from app.core.usage_tracker import check_capacity
 from app.models.llm_purpose import LLMPurpose
 
@@ -46,48 +47,66 @@ async def resolve_model(
     """
     exclude = exclude or set()
 
-    purpose = await db.get(LLMPurpose, purpose_id)
-    if not purpose:
-        raise SmartRouterError(
-            purpose_name=purpose_id,
-            reasons=[f"Purpose '{purpose_id}' not found"],
-        )
+    with span(
+        "smart_router.resolve",
+        purpose_id=str(purpose_id),
+        est_tokens=estimated_tokens,
+        excluded_count=len(exclude),
+    ) as s:
+        purpose = await db.get(LLMPurpose, purpose_id)
+        if not purpose:
+            set_attrs(s, error="purpose_not_found")
+            raise SmartRouterError(
+                purpose_name=purpose_id,
+                reasons=[f"Purpose '{purpose_id}' not found"],
+            )
 
-    slots = purpose.get_slots()
-    if not slots:
+        slots = purpose.get_slots()
+        set_attrs(s, purpose=purpose.name, slot_count=len(slots) if slots else 0)
+        if not slots:
+            set_attrs(s, error="no_slots_configured")
+            raise SmartRouterError(
+                purpose_name=purpose.name,
+                reasons=["No model slots configured"],
+            )
+
+        rejection_reasons: list[str] = []
+
+        for i, slot in enumerate(slots, 1):
+            provider = slot["provider"]
+            model = slot["model"]
+
+            if (provider, model) in exclude:
+                rejection_reasons.append(
+                    f"P{i} {provider}/{model}: skipped (failed at runtime)"
+                )
+                continue
+
+            has_capacity, reason = await check_capacity(
+                provider, model, estimated_tokens, db=db
+            )
+
+            if has_capacity:
+                if i > 1 or exclude:
+                    logger.info(
+                        f"Purpose '{purpose.name}': fell back to P{i} "
+                        f"({provider}/{model})"
+                    )
+                set_attrs(
+                    s,
+                    chosen_slot=i,
+                    chosen_provider=provider,
+                    chosen_model=model,
+                    fell_back=(i > 1 or bool(exclude)),
+                    rejections=rejection_reasons,
+                )
+                return provider, model
+
+            rejection_reasons.append(f"P{i} {provider}/{model}: {reason}")
+            logger.debug(f"Purpose '{purpose.name}' P{i} rejected: {reason}")
+
+        set_attrs(s, exhausted=True, rejections=rejection_reasons)
         raise SmartRouterError(
             purpose_name=purpose.name,
-            reasons=["No model slots configured"],
+            reasons=rejection_reasons,
         )
-
-    rejection_reasons: list[str] = []
-
-    for i, slot in enumerate(slots, 1):
-        provider = slot["provider"]
-        model = slot["model"]
-
-        if (provider, model) in exclude:
-            rejection_reasons.append(
-                f"P{i} {provider}/{model}: skipped (failed at runtime)"
-            )
-            continue
-
-        has_capacity, reason = await check_capacity(
-            provider, model, estimated_tokens, db=db
-        )
-
-        if has_capacity:
-            if i > 1 or exclude:
-                logger.info(
-                    f"Purpose '{purpose.name}': fell back to P{i} "
-                    f"({provider}/{model})"
-                )
-            return provider, model
-
-        rejection_reasons.append(f"P{i} {provider}/{model}: {reason}")
-        logger.debug(f"Purpose '{purpose.name}' P{i} rejected: {reason}")
-
-    raise SmartRouterError(
-        purpose_name=purpose.name,
-        reasons=rejection_reasons,
-    )
