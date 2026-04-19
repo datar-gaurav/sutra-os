@@ -328,8 +328,12 @@ def create_email_tools(agent_id: str):
                 if unread_only:
                     query_parts.append("is:unread")
                 if newer_than:
-                    query_parts.append(f"newer_than:{newer_than}")
-                
+                    since_dt = _parse_newer_than(newer_than)
+                    if since_dt:
+                        # Gmail's newer_than: only supports d/m/y units, so use after:<epoch>
+                        # which is second-precision and correctly honors hour/minute windows.
+                        query_parts.append(f"after:{int(since_dt.timestamp())}")
+
                 query = " ".join(query_parts)
                 results = service.users().messages().list(userId='me', labelIds=[folder], q=query, maxResults=limit).execute()
                 messages = results.get('messages', [])
@@ -378,13 +382,13 @@ def create_email_tools(agent_id: str):
                 search_criteria = []
                 if unread_only:
                     search_criteria.append("UNSEEN")
-                
-                if newer_than:
-                    since_date = _parse_newer_than(newer_than)
-                    if since_date:
-                        # IMAP SINCE expects DD-Mon-YYYY
-                        imap_date = since_date.strftime("%d-%b-%Y")
-                        search_criteria.append(f"SINCE {imap_date}")
+
+                since_date = _parse_newer_than(newer_than) if newer_than else None
+                if since_date:
+                    # IMAP SINCE is day-granular — use it for server-side narrowing,
+                    # then post-filter below to honor hour/minute precision.
+                    imap_date = since_date.strftime("%d-%b-%Y")
+                    search_criteria.append(f"SINCE {imap_date}")
 
                 search_query = " ".join(search_criteria) if search_criteria else "ALL"
                 _, data = conn.search(None, search_query)
@@ -397,6 +401,19 @@ def create_email_tools(agent_id: str):
                     _, msg_data = conn.fetch(mid, "(RFC822)")
                     raw = msg_data[0][1]
                     parsed = email_lib.message_from_bytes(raw)
+
+                    if since_date:
+                        date_header = parsed.get("Date", "")
+                        try:
+                            msg_dt = email_lib.utils.parsedate_to_datetime(date_header)
+                            if msg_dt is not None:
+                                # Compare naively if since_date is naive
+                                if msg_dt.tzinfo and since_date.tzinfo is None:
+                                    msg_dt = msg_dt.replace(tzinfo=None)
+                                if msg_dt < since_date:
+                                    continue
+                        except (TypeError, ValueError):
+                            pass
 
                     # Extract plain text snippet
                     snippet = ""

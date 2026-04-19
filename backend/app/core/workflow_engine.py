@@ -99,6 +99,7 @@ async def _evaluate_condition(condition: str, text: str, agent_id: str | None) -
     try:
         from app.core.orchestrator import orchestrator
         from app.core.agent_manager import agent_manager
+        from app.db.session import async_session_factory
         if not agent_manager.is_running(agent_id):
             return True
         prompt = (
@@ -107,7 +108,10 @@ async def _evaluate_condition(condition: str, text: str, agent_id: str | None) -
             f"Text:\n{text}\n\n"
             f"Answer with ONLY 'YES' or 'NO'."
         )
-        result = await orchestrator.route_message(agent_id=agent_id, message=prompt)
+        async with async_session_factory() as db:
+            result = await orchestrator.route_message(
+                agent_id=agent_id, message=prompt, db=db
+            )
         answer = result.get("output", "").strip().upper()
         return answer.startswith("YES")
     except Exception as e:
@@ -131,6 +135,7 @@ async def _invoke_agent(
     """
     from app.core.orchestrator import orchestrator
     from app.core.agent_manager import agent_manager
+    from app.db.session import async_session_factory
 
     if not agent_manager.is_running(agent_id):
         return f"[Agent {agent_id} is not running]"
@@ -138,11 +143,16 @@ async def _invoke_agent(
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            coro = orchestrator.route_message(agent_id=agent_id, message=prompt)
-            if timeout_seconds and timeout_seconds > 0:
-                result = await asyncio.wait_for(coro, timeout=timeout_seconds)
-            else:
-                result = await coro
+            # Pass a db session so purpose-based smart routing, daily budget
+            # checks, and memory injection apply — same path as chat.
+            async with async_session_factory() as db:
+                coro = orchestrator.route_message(
+                    agent_id=agent_id, message=prompt, db=db
+                )
+                if timeout_seconds and timeout_seconds > 0:
+                    result = await asyncio.wait_for(coro, timeout=timeout_seconds)
+                else:
+                    result = await coro
             return result.get("output", "[No output]")
         except asyncio.TimeoutError:
             last_error = TimeoutError(
