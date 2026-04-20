@@ -35,7 +35,21 @@ export default function AgentsPage() {
 
     // Folder State
     const [folders, setFolders] = useState<Folder[]>([]);
-    const [selectedFolderId, setSelectedFolderId] = useState<string | null>("ALL");
+    const [selectedFolderId, setSelectedFolderId] = useState<string | null>(() => {
+        if (typeof window !== "undefined") {
+            const stored = localStorage.getItem("agents_selectedFolderId");
+            if (stored === "NULL") return null;
+            return stored ?? "ALL";
+        }
+        return "ALL";
+    });
+
+    function selectFolder(id: string | null) {
+        setSelectedFolderId(id);
+        if (typeof window !== "undefined") {
+            localStorage.setItem("agents_selectedFolderId", id ?? "NULL");
+        }
+    }
 
     // Folder CRUD UI State
     const [isCreatingFolder, setIsCreatingFolder] = useState(false);
@@ -139,7 +153,7 @@ export default function AgentsPage() {
             setFolders([...folders, folder]);
             setIsCreatingFolder(false);
             setNewFolderName("");
-            setSelectedFolderId(folder.id);
+            selectFolder(folder.id);
         } catch (err) { console.error(err); alert("Failed to create folder"); }
     }
 
@@ -159,7 +173,7 @@ export default function AgentsPage() {
         try {
             await foldersApi.delete(id);
             setFolders(folders.filter(f => f.id !== id));
-            if (selectedFolderId === id) setSelectedFolderId("ALL");
+            if (selectedFolderId === id) selectFolder("ALL");
             await loadAgents();
         } catch (err) { console.error(err); alert("Failed to delete folder"); }
     }
@@ -201,7 +215,7 @@ export default function AgentsPage() {
                         {folderDropdownOpen && (
                             <div className="absolute right-0 top-full mt-1.5 w-64 bg-white border border-stone-200 rounded-xl shadow-lg z-50 py-1 animate-slide-up">
                                 <button
-                                    onClick={() => { setSelectedFolderId("ALL"); setFolderDropdownOpen(false); }}
+                                    onClick={() => { selectFolder("ALL"); setFolderDropdownOpen(false); }}
                                     className={`w-full flex items-center gap-3 px-3 py-2 text-sm transition-colors ${selectedFolderId === "ALL" ? "bg-stone-100 text-stone-800 font-medium" : "text-stone-600 hover:bg-stone-50"}`}
                                 >
                                     <FolderIcon className="w-4 h-4" />
@@ -209,7 +223,7 @@ export default function AgentsPage() {
                                     <span className="ml-auto text-xs text-stone-400">{agents.length}</span>
                                 </button>
                                 <button
-                                    onClick={() => { setSelectedFolderId(null); setFolderDropdownOpen(false); }}
+                                    onClick={() => { selectFolder(null); setFolderDropdownOpen(false); }}
                                     className={`w-full flex items-center gap-3 px-3 py-2 text-sm transition-colors ${selectedFolderId === null ? "bg-stone-100 text-stone-800 font-medium" : "text-stone-600 hover:bg-stone-50"}`}
                                 >
                                     <FolderIcon className="w-4 h-4" />
@@ -235,7 +249,7 @@ export default function AgentsPage() {
                                             </form>
                                         ) : (
                                             <button
-                                                onClick={() => { setSelectedFolderId(folder.id); setFolderDropdownOpen(false); }}
+                                                onClick={() => { selectFolder(folder.id); setFolderDropdownOpen(false); }}
                                                 className={`flex-1 flex items-center gap-3 px-3 py-2 text-sm transition-colors ${selectedFolderId === folder.id ? "bg-stone-100 text-stone-800 font-medium" : "text-stone-600 hover:bg-stone-50"}`}
                                             >
                                                 <FolderIcon className="w-4 h-4" />
