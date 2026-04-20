@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,12 @@ async def _invoke_agent(
     return f"[Error after {max_retries + 1} attempts: {last_error}]"
 
 
-async def execute_workflow_enhanced(workflow_id: str, initial_input: str = "", current_depth: int = 0) -> dict[str, Any]:
+async def execute_workflow_enhanced(
+    workflow_id: str,
+    initial_input: str = "",
+    current_depth: int = 0,
+    progress_callback: Callable[[list], Any] | None = None,
+) -> dict[str, Any]:
     """
     Enhanced workflow executor supporting:
       - input: static text input (falls back to initial_input if value is empty)
@@ -285,6 +290,8 @@ async def execute_workflow_enhanced(workflow_id: str, initial_input: str = "", c
             log(node_id, "info", f"Agent node '{data.get('label', node_id)}' → agent {agent_id}" +
                 (f" (retries: {node_retries})" if node_retries else "") +
                 (f" (timeout: {node_timeout}s)" if node_timeout != DEFAULT_NODE_TIMEOUT else ""))
+            if progress_callback:
+                await progress_callback(list(logs))
             output = await _invoke_agent(agent_id, prompt, max_retries=node_retries, timeout_seconds=node_timeout)
             results[node_id] = output
             is_error = output.startswith("[Error") or output.startswith("[Agent")
@@ -387,6 +394,8 @@ async def execute_workflow_enhanced(workflow_id: str, initial_input: str = "", c
             node_timeout = int(data.get("timeout_seconds", DEFAULT_NODE_TIMEOUT))
             log(node_id, "info",
                 f"Loop node '{data.get('label', node_id)}': {max_iterations} iterations, agent {agent_id}")
+            if progress_callback:
+                await progress_callback(list(logs))
 
             current = input_text
             for i in range(max_iterations):
@@ -415,6 +424,8 @@ async def execute_workflow_enhanced(workflow_id: str, initial_input: str = "", c
             log(node_id, "info",
                 f"Discussion node '{disc_title}': type={disc_type}, "
                 f"participants={participant_names}, rounds={max_rounds}")
+            if progress_callback:
+                await progress_callback(list(logs))
 
             try:
                 from sqlalchemy import select

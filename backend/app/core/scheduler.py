@@ -26,9 +26,20 @@ async def execute_workflow(workflow_id: str, initial_input: str = ""):
         workflow.last_run_logs = []
         await db.commit()
 
+    async def _flush_progress(current_logs: list) -> None:
+        async with async_session_factory() as db:
+            wf = await db.get(Workflow, workflow_id)
+            if wf:
+                wf.last_run_logs = current_logs
+                await db.commit()
+
     try:
         from app.core.workflow_engine import execute_workflow_enhanced
-        result = await execute_workflow_enhanced(workflow_id, initial_input=initial_input)
+        result = await execute_workflow_enhanced(
+            workflow_id,
+            initial_input=initial_input,
+            progress_callback=_flush_progress,
+        )
     except Exception as e:
         result = {"status": "failed", "logs": [{"type": "error", "message": str(e)}], "results": {}, "final_output": ""}
 
