@@ -203,6 +203,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to restore agents/MCP: {e}")
 
+    # Seed the Dash general-purpose orchestrator agent
+    try:
+        from app.db.seed_general_agent import seed_general_agent
+        from app.db.session import async_session_factory
+        async with async_session_factory() as db:
+            await seed_general_agent(db)
+    except Exception as e:
+        logger.warning(f"Dash agent seed skipped: {e}")
+
     # Start agent watchdog
     try:
         from app.core.watchdog import watchdog

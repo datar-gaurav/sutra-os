@@ -117,6 +117,23 @@ async def _fetch_memory_context(agent_id: str, query: str, db: AsyncSession) -> 
         return ""
 
 
+async def _fetch_skill_fragments(skill_ids: list[str], db: AsyncSession) -> list[str]:
+    """Fetch prompt_fragment strings for the given skill IDs."""
+    try:
+        from app.models.skill import Skill
+        from sqlalchemy import select
+        result = await db.execute(
+            select(Skill.prompt_fragment).where(
+                Skill.id.in_(skill_ids),
+                Skill.is_active == True,  # noqa: E712
+            )
+        )
+        return [row for row in result.scalars().all() if row]
+    except Exception as e:
+        logger.debug(f"Skill fragment fetch failed: {e}")
+        return []
+
+
 class Orchestrator:
     """Main orchestration engine that routes messages to agents and manages delegation."""
 
@@ -146,6 +163,7 @@ class Orchestrator:
         estimated_tokens: int,
         db: AsyncSession | None,
         exclude: set[tuple[str, str]] | None = None,
+        purpose_override_id: str | None = None,
     ) -> tuple[Any, str | None, str | None, int]:
         """Resolve executor, optionally using smart routing for purpose-based agents.
 
@@ -154,7 +172,7 @@ class Orchestrator:
         For purpose-based: (new executor, provider, model, refresh_hours)
         """
         info = agent_manager.get_info(agent_id)
-        purpose_id = info.get("purpose_id") if info else None
+        purpose_id = purpose_override_id or (info.get("purpose_id") if info else None)
 
         if purpose_id and db:
             # Smart routing: resolve model per-request
@@ -190,10 +208,12 @@ class Orchestrator:
         message: str,
         chat_history: list[dict] | None = None,
         db: AsyncSession | None = None,
+        extra_skill_ids: list[str] | None = None,
+        purpose_override_id: str | None = None,
     ) -> dict[str, Any]:
         """Route a message to a specific agent and return the response."""
         info = agent_manager.get_info(agent_id)
-        purpose_id = info.get("purpose_id") if info else None
+        purpose_id = purpose_override_id or (info.get("purpose_id") if info else None)
 
         # For legacy agents, check executor is running
         if not purpose_id:
@@ -211,13 +231,16 @@ class Orchestrator:
 
         # Run budget check + memory fetch sequentially (same db session — no concurrent ops)
         memory_context = ""
+        extra_skill_fragments: list[str] = []
         if db:
             budget_error = await self._check_daily_token_budget(agent_id, db)
             if budget_error:
                 return {"output": budget_error, "error": True}
             memory_context = await _fetch_memory_context(agent_id, message, db)
+            if extra_skill_ids:
+                extra_skill_fragments = await _fetch_skill_fragments(extra_skill_ids, db)
 
-        messages = self._build_messages(message, chat_history, memory_context)
+        messages = self._build_messages(message, chat_history, memory_context, extra_skill_fragments)
 
         # Pre-request token guard
         messages, estimated_input_tokens = self._guard_token_limit(messages, agent_id)
@@ -236,6 +259,7 @@ class Orchestrator:
                     await self._resolve_executor_for_request(
                         agent_id, estimated_input_tokens, db,
                         exclude=excluded_models or None,
+                        purpose_override_id=purpose_override_id,
                     )
                 )
             except RuntimeError as e:
@@ -457,6 +481,8 @@ class Orchestrator:
         message: str,
         chat_history: list[dict] | None = None,
         db: AsyncSession | None = None,
+        extra_skill_ids: list[str] | None = None,
+        purpose_override_id: str | None = None,
     ):
         """Stream a response from an agent, yielding chunks.
 
@@ -474,7 +500,9 @@ class Orchestrator:
         ) as root_span:
             log_text("user_message.txt", message)
             async for chunk in self._stream_message_impl(
-                agent_id, message, chat_history, db, root_span
+                agent_id, message, chat_history, db, root_span,
+                extra_skill_ids=extra_skill_ids,
+                purpose_override_id=purpose_override_id,
             ):
                 yield chunk
 
@@ -485,10 +513,12 @@ class Orchestrator:
         chat_history: list[dict] | None = None,
         db: AsyncSession | None = None,
         root_span: Any = None,
+        extra_skill_ids: list[str] | None = None,
+        purpose_override_id: str | None = None,
     ):
         """Inner streaming logic. Wrapped by ``stream_message`` for tracing."""
         info = agent_manager.get_info(agent_id)
-        purpose_id = info.get("purpose_id") if info else None
+        purpose_id = purpose_override_id or (info.get("purpose_id") if info else None)
 
         if not purpose_id:
             executor = agent_manager.get_executor(agent_id)
@@ -501,14 +531,17 @@ class Orchestrator:
 
         # Run budget check + memory fetch sequentially (same db session — no concurrent ops)
         memory_context = ""
+        extra_skill_fragments: list[str] = []
         if db:
             budget_error = await self._check_daily_token_budget(agent_id, db)
             if budget_error:
                 yield {"type": "error", "content": budget_error}
                 return
             memory_context = await _fetch_memory_context(agent_id, message, db)
+            if extra_skill_ids:
+                extra_skill_fragments = await _fetch_skill_fragments(extra_skill_ids, db)
 
-        messages = self._build_messages(message, chat_history, memory_context)
+        messages = self._build_messages(message, chat_history, memory_context, extra_skill_fragments)
 
         # Pre-request token guard
         messages, estimated_input_tokens = self._guard_token_limit(messages, agent_id)
@@ -527,6 +560,7 @@ class Orchestrator:
                     await self._resolve_executor_for_request(
                         agent_id, estimated_input_tokens, db,
                         exclude=excluded_models or None,
+                        purpose_override_id=purpose_override_id,
                     )
                 )
             except RuntimeError as e:
@@ -758,6 +792,7 @@ class Orchestrator:
         message: str,
         chat_history: list[dict] | None = None,
         memory_context: str = "",
+        extra_skill_fragments: list[str] | None = None,
     ):
         """Convert chat history + current message to LangChain messages."""
         import re
@@ -765,6 +800,10 @@ class Orchestrator:
 
         if memory_context:
             messages.append(SystemMessage(content=memory_context))
+
+        if extra_skill_fragments:
+            fragments_text = "\n\n".join(extra_skill_fragments)
+            messages.append(SystemMessage(content=f"[Active skills for this conversation]\n\n{fragments_text}"))
 
         # Time context injection
         now = datetime.now(timezone.utc)

@@ -282,3 +282,35 @@ async def test_integration(integration_id: str, db: AsyncSession = Depends(get_d
     except Exception as e:
         logger.warning("Integration test failed: %s", e)
         return {"ok": False, "detail": str(e)}
+
+
+@router.get("/google-drive/files")
+async def list_google_drive_files(q: str = ""):
+    """Search Google Drive files using stored system-wide credentials.
+
+    Returns an empty list (not an error) if no Drive integration is connected.
+    """
+    try:
+        from app.tools.google_drive_tools import _get_drive_credentials
+        from googleapiclient.discovery import build
+
+        creds = await _get_drive_credentials(agent_id=None)
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+        query_parts = ["trashed = false"]
+        if q.strip():
+            safe = q.replace("'", "\\'")
+            query_parts.append(f"(name contains '{safe}' or fullText contains '{safe}')")
+
+        results = service.files().list(
+            q=" and ".join(query_parts),
+            pageSize=20,
+            fields="files(id, name, mimeType, modifiedTime)",
+            orderBy="modifiedTime desc",
+        ).execute()
+
+        return results.get("files", [])
+    except Exception as e:
+        # If Drive isn't connected or creds are invalid, return empty list gracefully
+        logger.debug(f"Google Drive file listing failed: {e}")
+        return []

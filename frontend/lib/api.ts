@@ -236,9 +236,12 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     // NOT overwrite the already-merged headers object (which includes the auth token).
     const { headers: optionHeaders, ...rest } = options ?? {};
 
+    // Don't set Content-Type for FormData — the browser sets it with the correct boundary automatically.
+    const isFormData = options?.body instanceof FormData;
+
     const res = await fetch(`${API_BASE}${path}`, {
         headers: {
-            "Content-Type": "application/json",
+            ...(isFormData ? {} : { "Content-Type": "application/json" }),
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
             ...optionHeaders,
         },
@@ -357,6 +360,15 @@ export const chatApi = {
 
     dailyUsage: (agentId: string) =>
         apiFetch<AgentDailyUsage>(`/api/chat/usage/${agentId}`),
+
+    extractFileContext: (file: File) => {
+        const form = new FormData();
+        form.append("file", file);
+        return apiFetch<{ filename: string; content: string; char_count: number; truncated: boolean }>(
+            "/api/chat/extract-file-context",
+            { method: "POST", body: form },
+        );
+    },
 };
 
 // ─── System ─────────────────────────────────────────────────────────────────
@@ -2273,6 +2285,12 @@ export const googleDriveApi = {
         const base = `${API_BASE}/api/auth/google/login?service=drive`;
         return agent_id ? `${base}&agent_id=${agent_id}` : base;
     },
+
+    /** Search Drive files using stored system-wide credentials. Returns [] if not connected. */
+    searchFiles: (q: string) =>
+        apiFetch<{ id: string; name: string; mimeType: string; modifiedTime: string }[]>(
+            `/api/integrations/google-drive/files?q=${encodeURIComponent(q)}`
+        ),
 };
 
 
