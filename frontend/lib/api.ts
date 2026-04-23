@@ -1197,6 +1197,11 @@ export const workflowsApi = {
             method: "POST",
             body: JSON.stringify({ content, format, name_override: nameOverride ?? null }),
         }),
+    generateFromText: (description: string, agentId?: string) =>
+        apiFetch<WorkflowSummary>("/api/workflows/generate", {
+            method: "POST",
+            body: JSON.stringify({ description, agent_id: agentId ?? null }),
+        }),
 };
 
 // ─── Scheduled Jobs ──────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import Link from "next/link";
 import {
     Bot,
     Send,
@@ -30,6 +31,8 @@ import {
     Target,
     HardDrive,
     X,
+    Clock,
+    GitBranch,
 } from "lucide-react";
 import {
     agentsApi,
@@ -39,6 +42,8 @@ import {
     skillsApi,
     purposesApi,
     googleDriveApi,
+    jobsApi,
+    workflowsApi,
     type Agent,
     type ChatMessage,
     type Conversation,
@@ -247,6 +252,20 @@ export default function ChatPage() {
     const [driveSearchQuery, setDriveSearchQuery] = useState("");
     const [driveFiles, setDriveFiles] = useState<{ id: string; name: string; mimeType: string; modifiedTime: string }[]>([]);
     const [driveSearching, setDriveSearching] = useState(false);
+
+    // Schedule modal
+    const [showScheduleModal, setShowScheduleModal] = useState(false);
+    const [scheduleLabel, setScheduleLabel] = useState("");
+    const [schedulePreset, setSchedulePreset] = useState("daily_9am");
+    const [scheduleCron, setScheduleCron] = useState("0 9 * * *");
+    const [scheduleCreating, setScheduleCreating] = useState(false);
+    const [scheduleSuccess, setScheduleSuccess] = useState(false);
+
+    // Workflow generator modal
+    const [showWorkflowModal, setShowWorkflowModal] = useState(false);
+    const [workflowDescription, setWorkflowDescription] = useState("");
+    const [generatingWorkflow, setGeneratingWorkflow] = useState(false);
+    const [generatedWorkflowId, setGeneratedWorkflowId] = useState<string | null>(null);
 
     // Projects
     const [activeProject, setActiveProject] = useState<Project | null>(null);
@@ -556,6 +575,61 @@ export default function ChatPage() {
         } finally {
             setStreaming(false);
         }
+    }
+
+    // ── Schedule Task ────────────────────────────────────────────────────────────
+
+    async function handleScheduleTask() {
+        if (!scheduleLabel.trim() || !scheduleCron || !selectedAgent) return;
+        setScheduleCreating(true);
+        try {
+            const label = scheduleLabel.slice(0, 120);
+            await jobsApi.create({
+                name: label,
+                execution_type: "prompt",
+                target_id: selectedAgent.id,
+                prompt_text: scheduleLabel,
+                cron_expression: scheduleCron,
+                timezone: "America/Los_Angeles",
+                is_active: true,
+            });
+            setScheduleSuccess(true);
+        } catch (err) {
+            console.error("Schedule failed:", err);
+        } finally {
+            setScheduleCreating(false);
+        }
+    }
+
+    function openScheduleModal() {
+        setShowAttachMenu(false);
+        setScheduleLabel(input.trim());
+        setSchedulePreset("daily_9am");
+        setScheduleCron("0 9 * * *");
+        setScheduleSuccess(false);
+        setShowScheduleModal(true);
+    }
+
+    // ── Workflow Generator ───────────────────────────────────────────────────────
+
+    async function handleGenerateWorkflow() {
+        if (!workflowDescription.trim()) return;
+        setGeneratingWorkflow(true);
+        try {
+            const wf = await workflowsApi.generateFromText(workflowDescription, selectedAgent?.id);
+            setGeneratedWorkflowId(wf.id);
+        } catch (err) {
+            console.error("Workflow generation failed:", err);
+        } finally {
+            setGeneratingWorkflow(false);
+        }
+    }
+
+    function openWorkflowModal() {
+        setShowAttachMenu(false);
+        setWorkflowDescription(input.trim());
+        setGeneratedWorkflowId(null);
+        setShowWorkflowModal(true);
     }
 
     function handleKeyDown(e: React.KeyboardEvent) {
@@ -924,6 +998,26 @@ export default function ChatPage() {
                                                     <span className="text-sm text-stone-700 flex-1">Select Purpose</span>
                                                     <ChevronRight className="w-3.5 h-3.5 text-stone-400" />
                                                 </button>
+
+                                                <div className="my-1 border-t border-stone-100" />
+
+                                                {/* Schedule task */}
+                                                <button
+                                                    onClick={openScheduleModal}
+                                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-stone-50 transition-colors text-left"
+                                                >
+                                                    <Clock className="w-4 h-4 text-stone-500" />
+                                                    <span className="text-sm text-stone-700">Schedule task</span>
+                                                </button>
+
+                                                {/* Create workflow */}
+                                                <button
+                                                    onClick={openWorkflowModal}
+                                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-stone-50 transition-colors text-left"
+                                                >
+                                                    <GitBranch className="w-4 h-4 text-stone-500" />
+                                                    <span className="text-sm text-stone-700">Create workflow</span>
+                                                </button>
                                             </div>
                                         )}
                                     </div>
@@ -1221,6 +1315,23 @@ export default function ChatPage() {
                                                         <span className="text-sm text-stone-700 flex-1">Select Purpose</span>
                                                         <ChevronRight className="w-3.5 h-3.5 text-stone-400" />
                                                     </button>
+
+                                                    <div className="my-1 border-t border-stone-100" />
+
+                                                    <button
+                                                        onClick={openScheduleModal}
+                                                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-stone-50 transition-colors text-left"
+                                                    >
+                                                        <Clock className="w-4 h-4 text-stone-500" />
+                                                        <span className="text-sm text-stone-700">Schedule task</span>
+                                                    </button>
+                                                    <button
+                                                        onClick={openWorkflowModal}
+                                                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-stone-50 transition-colors text-left"
+                                                    >
+                                                        <GitBranch className="w-4 h-4 text-stone-500" />
+                                                        <span className="text-sm text-stone-700">Create workflow</span>
+                                                    </button>
                                                 </div>
                                             )}
                                         </div>
@@ -1397,6 +1508,151 @@ export default function ChatPage() {
                         </div>
                         <div className="p-3 border-t border-stone-100">
                             <p className="text-xs text-stone-400 text-center">The agent will read the file using its Google Drive tools</p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Schedule Task Modal ──────────────────────────────────────────────── */}
+            {showScheduleModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/20" onClick={() => { setShowScheduleModal(false); setScheduleSuccess(false); }} />
+                    <div className="relative bg-white rounded-2xl border border-stone-200 shadow-2xl w-96 flex flex-col">
+                        <div className="p-4 border-b border-stone-200 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <Clock className="w-4 h-4 text-stone-500" />
+                                <h3 className="text-sm font-semibold text-stone-800">Schedule Task</h3>
+                            </div>
+                            <button onClick={() => { setShowScheduleModal(false); setScheduleSuccess(false); }} className="p-1.5 hover:bg-stone-100 rounded-lg transition-colors">
+                                <X className="w-4 h-4 text-stone-500" />
+                            </button>
+                        </div>
+                        <div className="p-4 space-y-4">
+                            {scheduleSuccess ? (
+                                <div className="text-center py-6 space-y-3">
+                                    <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto" />
+                                    <p className="text-sm font-medium text-stone-800">Task scheduled!</p>
+                                    <Link href="/jobs" className="text-xs text-stone-500 hover:text-stone-700 underline">View in Jobs →</Link>
+                                </div>
+                            ) : (
+                                <>
+                                    <div>
+                                        <label className="block text-xs font-medium text-stone-600 mb-1.5">Task</label>
+                                        <textarea
+                                            value={scheduleLabel}
+                                            onChange={e => setScheduleLabel(e.target.value)}
+                                            className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-300/50 resize-none"
+                                            rows={2}
+                                            placeholder="What should the agent do?"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-stone-600 mb-2">Recurrence</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {[
+                                                { id: "hourly", label: "Every hour", cron: "0 * * * *" },
+                                                { id: "daily_9am", label: "Daily at 9am", cron: "0 9 * * *" },
+                                                { id: "weekdays", label: "Weekdays 9am", cron: "0 9 * * 1-5" },
+                                                { id: "weekly", label: "Every Monday", cron: "0 9 * * 1" },
+                                                { id: "custom", label: "Custom cron…", cron: "" },
+                                            ].map(p => (
+                                                <button
+                                                    key={p.id}
+                                                    onClick={() => { setSchedulePreset(p.id); if (p.cron) setScheduleCron(p.cron); }}
+                                                    className={`px-3 py-2 rounded-lg text-sm text-left transition-colors border ${
+                                                        schedulePreset === p.id
+                                                            ? "bg-stone-800 text-white border-stone-800"
+                                                            : "border-stone-200 hover:bg-stone-50 text-stone-700"
+                                                    }`}
+                                                >
+                                                    {p.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    {schedulePreset === "custom" && (
+                                        <div>
+                                            <label className="block text-xs font-medium text-stone-600 mb-1.5">Cron Expression</label>
+                                            <input
+                                                type="text"
+                                                value={scheduleCron}
+                                                onChange={e => setScheduleCron(e.target.value)}
+                                                placeholder="0 9 * * 1-5"
+                                                className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-stone-300/50"
+                                            />
+                                            <p className="text-[10px] text-stone-400 mt-1">5-field cron: minute hour day month weekday</p>
+                                        </div>
+                                    )}
+                                    <button
+                                        onClick={handleScheduleTask}
+                                        disabled={scheduleCreating || !scheduleLabel.trim() || !scheduleCron}
+                                        className="w-full py-2 px-4 bg-stone-800 text-white text-sm font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        {scheduleCreating ? <><Loader2 className="w-4 h-4 animate-spin" />Scheduling...</> : <><Clock className="w-4 h-4" />Schedule Task</>}
+                                    </button>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Create Workflow Modal ─────────────────────────────────────────────── */}
+            {showWorkflowModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/20" onClick={() => { setShowWorkflowModal(false); setGeneratedWorkflowId(null); }} />
+                    <div className="relative bg-white rounded-2xl border border-stone-200 shadow-2xl w-[480px] flex flex-col">
+                        <div className="p-4 border-b border-stone-200 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <GitBranch className="w-4 h-4 text-stone-500" />
+                                <h3 className="text-sm font-semibold text-stone-800">Create Workflow</h3>
+                            </div>
+                            <button onClick={() => { setShowWorkflowModal(false); setGeneratedWorkflowId(null); }} className="p-1.5 hover:bg-stone-100 rounded-lg transition-colors">
+                                <X className="w-4 h-4 text-stone-500" />
+                            </button>
+                        </div>
+                        <div className="p-4 space-y-4">
+                            {generatedWorkflowId ? (
+                                <div className="text-center py-6 space-y-3">
+                                    <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto" />
+                                    <p className="text-sm font-medium text-stone-800">Workflow created!</p>
+                                    <p className="text-xs text-stone-400">Saved as draft — configure agents before activating.</p>
+                                    <Link
+                                        href={`/workflows/${generatedWorkflowId}`}
+                                        className="inline-flex items-center gap-1.5 text-sm text-stone-600 hover:text-stone-800 bg-stone-100 hover:bg-stone-200 px-4 py-2 rounded-lg transition-colors"
+                                    >
+                                        <GitBranch className="w-3.5 h-3.5" />
+                                        Open in builder →
+                                    </Link>
+                                </div>
+                            ) : (
+                                <>
+                                    <div>
+                                        <label className="block text-xs font-medium text-stone-600 mb-1.5">Describe your workflow</label>
+                                        <textarea
+                                            value={workflowDescription}
+                                            onChange={e => setWorkflowDescription(e.target.value)}
+                                            className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-300/50 resize-none"
+                                            rows={4}
+                                            placeholder="e.g. Fetch latest news, summarize it, then post to Slack every morning..."
+                                            autoFocus
+                                        />
+                                    </div>
+                                    <p className="text-xs text-stone-400">
+                                        The workflow is generated using AI and saved as a draft. You can edit it in the builder before activating.
+                                    </p>
+                                    <button
+                                        onClick={handleGenerateWorkflow}
+                                        disabled={generatingWorkflow || !workflowDescription.trim()}
+                                        className="w-full py-2 px-4 bg-stone-800 text-white text-sm font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        {generatingWorkflow
+                                            ? <><Loader2 className="w-4 h-4 animate-spin" />Generating...</>
+                                            : <><GitBranch className="w-4 h-4" />Generate Workflow</>
+                                        }
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>
