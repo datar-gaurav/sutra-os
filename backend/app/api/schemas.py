@@ -400,6 +400,8 @@ class ChatRequest(BaseModel):
     agent_id: str
     message: str
     conversation_id: str | None = None
+    extra_skill_ids: list[str] = []
+    purpose_override_id: str | None = None
 
     @field_validator("message")
     @classmethod

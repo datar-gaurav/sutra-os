@@ -32,7 +32,7 @@ export default function LoginPage() {
             if (result.user.is_first_login) {
                 router.replace("/settings");
             } else {
-                router.replace("/");
+                router.replace("/chat");
             }
         } catch (err: any) {
             setError(err.message || "Something went wrong");

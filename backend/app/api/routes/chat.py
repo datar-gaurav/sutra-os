@@ -4,7 +4,7 @@ import asyncio
 import json
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -150,6 +150,8 @@ async def chat(request: Request, payload: ChatRequest, db: AsyncSession = Depend
         message=effective_message,
         chat_history=chat_history,
         db=db,
+        extra_skill_ids=payload.extra_skill_ids or None,
+        purpose_override_id=payload.purpose_override_id,
     )
 
     # Save assistant response
@@ -269,6 +271,8 @@ async def chat_stream(request: Request, payload: ChatRequest, db: AsyncSession =
             message=user_message,
             chat_history=chat_history,
             db=db,
+            extra_skill_ids=payload.extra_skill_ids or None,
+            purpose_override_id=payload.purpose_override_id,
         ):
             if chunk["type"] == "token":
                 full_response += chunk["content"]
@@ -315,6 +319,49 @@ async def chat_stream(request: Request, payload: ChatRequest, db: AsyncSession =
             "X-Accel-Buffering": "no",
         },
     )
+
+# ─── File Context Extraction ──────────────────────────────────────────────────
+
+_ALLOWED_CONTEXT_TYPES = {".pdf", ".txt", ".md", ".csv", ".json", ".rst"}
+_MAX_CONTEXT_CHARS = 15_000
+
+
+@router.post("/extract-file-context")
+async def extract_file_context(file: UploadFile = File(...)):
+    """Extract text from an uploaded file to use as message context.
+
+    Supports: .pdf, .txt, .md, .csv, .json, .rst (max 20 MB).
+    Returns the extracted text truncated to 15,000 characters.
+    """
+    import os
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in _ALLOWED_CONTEXT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(_ALLOWED_CONTEXT_TYPES)}",
+        )
+
+    raw = await file.read()
+    if len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File exceeds 20 MB limit.")
+
+    try:
+        if ext == ".pdf":
+            from app.core.rag_service import _extract_pdf_text
+            content = _extract_pdf_text(raw)
+        else:
+            content = raw.decode("utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not extract text: {e}")
+
+    truncated = len(content) > _MAX_CONTEXT_CHARS
+    return {
+        "filename": file.filename,
+        "content": content[:_MAX_CONTEXT_CHARS],
+        "char_count": min(len(content), _MAX_CONTEXT_CHARS),
+        "truncated": truncated,
+    }
+
 
 # ─── Daily Usage ──────────────────────────────────────────────────────────────
 
