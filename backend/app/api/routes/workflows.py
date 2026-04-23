@@ -1,5 +1,6 @@
 from typing import List
 import json
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -11,6 +12,8 @@ from app.db.session import get_db
 from app.models.workflow import Workflow
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workflows", tags=["Workflows"])
 
@@ -433,3 +436,124 @@ async def import_workflow(data: WorkflowImportRequest, db: AsyncSession = Depend
     from app.core.scheduler import sync_workflows
     await sync_workflows()
     return workflow
+
+
+# ─── Generate from Natural Language ─────────────────────────────────────────
+
+class WorkflowGenerateRequest(BaseModel):
+    description: str
+    agent_id: Optional[str] = None
+
+
+@router.post("/generate", response_model=WorkflowResponse, status_code=201)
+async def generate_workflow_from_text(data: WorkflowGenerateRequest, db: AsyncSession = Depends(get_db)):
+    """Generate a workflow from a natural language description using an LLM."""
+    from app.core.llm_registry import llm_registry
+    from app.models.agent import Agent
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    # Find an LLM: prefer specified agent, then Dash, then any active agent
+    agent = None
+    if data.agent_id:
+        agent = await db.get(Agent, data.agent_id)
+    if not agent:
+        result = await db.execute(select(Agent).where(Agent.name == "Dash", Agent.is_active.is_(True)))
+        agent = result.scalars().first()
+    if not agent:
+        result = await db.execute(select(Agent).where(Agent.is_active.is_(True)).limit(1))
+        agent = result.scalars().first()
+
+    provider = agent.llm_provider if agent else "ollama"
+    model = agent.llm_model if agent else "llama3"
+
+    try:
+        llm = llm_registry.get_chat_model(provider=provider, model=model, temperature=0.3, max_tokens=4096, streaming=False)
+    except Exception:
+        llm = llm_registry.get_chat_model(provider="ollama", model="llama3", temperature=0.3, max_tokens=4096, streaming=False)
+
+    system_prompt = """You are an expert workflow designer for the Sutra AI Orchestrator platform.
+Generate a workflow in the following Markdown format based on the user's description.
+
+Node types:
+- [input]: Start node. Fields: value (initial input or empty)
+- [agent]: Runs an AI agent. Fields: agent_id (leave empty), prompt (use {input} for previous output), max_retries
+- [conditional]: Branches on a condition. Fields: condition (string), agent_id (leave empty)
+- [loop]: Iterates with an agent. Fields: agent_id (leave empty), prompt, max_iterations, max_retries
+- [approval_gate]: Pauses for human review. Fields: description
+- [parallel]: Fan-out to parallel branches. No extra fields.
+
+Edge format:
+- Simple: NodeLabel --> NextNodeLabel
+- Conditional: NodeLabel --true--> NextNodeLabel  /  NodeLabel --false--> NextNodeLabel
+
+Rules:
+1. Always start with an [input] node named "Start"
+2. Leave agent_id empty — the user will configure it later
+3. Use {input} in prompts to pass output from the previous step
+4. Use descriptive node labels
+5. Return ONLY the Markdown document, no explanation or code fences
+
+Example format:
+# Workflow: <name>
+
+<description>
+
+**Schedule:** Manual
+**Active:** true
+
+## Nodes
+
+### 1. [input] Start
+- id: input-1
+- value:
+
+### 2. [agent] <Step Name>
+- id: agent-1
+- agent_id:
+- prompt: {input}
+- max_retries: 0
+
+## Edges
+
+Start --> <Step Name>"""
+
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"Create a workflow for: {data.description}"),
+    ]
+
+    try:
+        response = await llm.ainvoke(messages)
+        md: str = response.content
+
+        # Strip code fences if the model wrapped the output
+        fence_match = re.search(r"```(?:markdown)?\n([\s\S]+?)\n```", md)
+        if fence_match:
+            md = fence_match.group(1)
+
+        name, description, schedule_interval, is_active, definition = _markdown_to_definition(md)
+
+        if definition.get("nodes"):
+            from app.core.workflow_engine import validate_workflow_dag
+            errors = validate_workflow_dag(definition)
+            if errors:
+                logger.warning("Generated workflow has validation warnings: %s", errors)
+
+        workflow = Workflow(
+            name=name,
+            description=description,
+            schedule_interval=schedule_interval,
+            is_active=False,  # start as draft — user must activate
+            definition=definition,
+        )
+        db.add(workflow)
+        await db.flush()
+        await db.refresh(workflow)
+
+        from app.core.scheduler import sync_workflows
+        await sync_workflows()
+        return workflow
+
+    except Exception as e:
+        logger.error("Workflow generation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Workflow generation failed: {e}")
