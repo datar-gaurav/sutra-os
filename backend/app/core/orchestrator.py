@@ -823,8 +823,14 @@ class Orchestrator:
         # @Mention Detection
         mentions = re.findall(r"@(\w+)", message)
         if mentions:
-            hint = f"Note: You were mentioned along with the following agents: {', '.join(mentions)}. " \
-                   "If you need to collaborate or delegate tasks to them, use your 'ask_agent' tool."
+            agent_list = ", ".join(f'"{m}"' for m in mentions)
+            hint = (
+                f"IMPORTANT — The user has explicitly tagged the following agent(s) by name: {agent_list}. "
+                "You MUST use the 'ask_agent' tool to delegate the relevant sub-task(s) to each tagged agent. "
+                "Do NOT attempt to handle a tagged agent's portion of the task yourself. "
+                "Extract the specific task intended for each tagged agent from the user's message, "
+                "call ask_agent for each one, and incorporate their responses into your final answer."
+            )
             messages.append(SystemMessage(content=hint))
 
         if chat_history:
