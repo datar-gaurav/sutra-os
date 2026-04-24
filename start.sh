@@ -25,6 +25,9 @@ if [ ! -f backend/.env ]; then
     cp backend/.env.example backend/.env
 fi
 
+# Render host-path bind mounts (docker-compose.override.yml) from ALLOWED_AGENT_FILE_PATHS
+scripts/render-host-mounts.sh
+
 # Start (with optional rebuild)
 if [ "$1" = "--build" ]; then
     docker compose up --build -d

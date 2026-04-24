@@ -35,6 +35,9 @@ Thumbs.db
 backend/.env
 backend/.ssh/
 
+# Auto-generated from ALLOWED_AGENT_FILE_PATHS (see scripts/render-host-mounts.sh)
+docker-compose.override.yml
+
 # Backend Data & Cache
 backend/.cache/
 backend/.pki/
