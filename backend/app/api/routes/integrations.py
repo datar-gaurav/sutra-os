@@ -285,8 +285,8 @@ async def test_integration(integration_id: str, db: AsyncSession = Depends(get_d
 
 
 @router.get("/google-drive/files")
-async def list_google_drive_files(q: str = ""):
-    """Search Google Drive files using stored system-wide credentials.
+async def list_google_drive_files(q: str = "", agent_id: str | None = None):
+    """Search Google Drive files. Falls back across agent-specific → system-wide → any integration.
 
     Returns an empty list (not an error) if no Drive integration is connected.
     """
@@ -294,7 +294,7 @@ async def list_google_drive_files(q: str = ""):
         from app.tools.google_drive_tools import _get_drive_credentials
         from googleapiclient.discovery import build
 
-        creds = await _get_drive_credentials(agent_id=None)
+        creds = await _get_drive_credentials(agent_id=agent_id)
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
         query_parts = ["trashed = false"]
@@ -312,5 +312,21 @@ async def list_google_drive_files(q: str = ""):
         return results.get("files", [])
     except Exception as e:
         # If Drive isn't connected or creds are invalid, return empty list gracefully
-        logger.debug(f"Google Drive file listing failed: {e}")
+        logger.warning(f"Google Drive file listing failed: {e}")
         return []
+
+
+@router.get("/google-drive/picker-token")
+async def get_google_drive_picker_token(agent_id: str | None = None):
+    """Return a short-lived OAuth access token + keys needed by the Google Picker API."""
+    try:
+        from app.tools.google_drive_tools import _get_drive_credentials
+        creds = await _get_drive_credentials(agent_id=agent_id)
+        return {
+            "access_token": creds.token,
+            "client_id": settings.google_client_id,
+            "api_key": settings.google_api_key,
+        }
+    except Exception as e:
+        logger.warning(f"Google Drive picker token failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))

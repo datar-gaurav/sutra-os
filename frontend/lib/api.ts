@@ -2291,11 +2291,22 @@ export const googleDriveApi = {
         return agent_id ? `${base}&agent_id=${agent_id}` : base;
     },
 
-    /** Search Drive files using stored system-wide credentials. Returns [] if not connected. */
-    searchFiles: (q: string) =>
-        apiFetch<{ id: string; name: string; mimeType: string; modifiedTime: string }[]>(
-            `/api/integrations/google-drive/files?q=${encodeURIComponent(q)}`
-        ),
+    /** Search Drive files. Passes agent_id so agent-specific credentials are preferred. Returns [] if not connected. */
+    searchFiles: (q: string, agent_id?: string) => {
+        const params = new URLSearchParams({ q });
+        if (agent_id) params.set("agent_id", agent_id);
+        return apiFetch<{ id: string; name: string; mimeType: string; modifiedTime: string }[]>(
+            `/api/integrations/google-drive/files?${params}`
+        );
+    },
+
+    /** Get a short-lived access token + keys for the Google Picker API. */
+    getPickerToken: (agent_id?: string) => {
+        const params = agent_id ? `?agent_id=${encodeURIComponent(agent_id)}` : "";
+        return apiFetch<{ access_token: string; client_id: string; api_key: string }>(
+            `/api/integrations/google-drive/picker-token${params}`
+        );
+    },
 };
 
 

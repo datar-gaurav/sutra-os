@@ -33,6 +33,9 @@ import {
     X,
     Clock,
     GitBranch,
+    FileText,
+    ImageIcon,
+    Folder,
 } from "lucide-react";
 import {
     agentsApi,
@@ -235,6 +238,7 @@ export default function ChatPage() {
     // ── + Menu / Attach State ────────────────────────────────────────────────────
     const [showAttachMenu, setShowAttachMenu] = useState(false);
     const [fileUploading, setFileUploading] = useState(false);
+    const [attachments, setAttachments] = useState<Array<{ type: 'file' | 'text' | 'image'; label: string; content: string }>>([]);
 
     // Conversation-scoped skills
     const [conversationSkillIds, setConversationSkillIds] = useState<string[]>([]);
@@ -385,7 +389,7 @@ export default function ChatPage() {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages, streamContent, streamToolSteps, inlineApprovals]);
 
-    // ── Handlers ─────────────────────────────────────────────────────────────────
+// ── Handlers ─────────────────────────────────────────────────────────────────
 
     const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         const val = e.target.value;
@@ -428,6 +432,7 @@ export default function ChatPage() {
         setInput("");
         setConversationSkillIds([]);
         setPurposeOverrideId(null);
+        setAttachments([]);
         if (inputRef.current) inputRef.current.focus();
     }, [selectedAgent]);
 
@@ -437,6 +442,7 @@ export default function ChatPage() {
         if (agent) {
             setSelectedAgent(agent);
             setActiveConversationId(conversationId);
+            setAttachments([]);
         }
     };
 
@@ -463,10 +469,20 @@ export default function ChatPage() {
     };
 
     async function handleSend() {
-        if (!input.trim() || !selectedAgent || streaming) return;
+        if ((!input.trim() && attachments.length === 0) || !selectedAgent || streaming) return;
 
-        const userMessage = input.trim();
+        const parts: string[] = [];
+        for (const att of attachments) {
+            if (att.type === 'image') {
+                parts.push(`[Attached image: ${att.label}]\n${att.content}`);
+            } else {
+                parts.push(att.content);
+            }
+        }
+        if (input.trim()) parts.push(input.trim());
+        const userMessage = parts.join('\n\n---\n\n');
         setInput("");
+        setAttachments([]);
 
         const tempUserMsg: ChatMessage = {
             id: `temp-${Date.now()}`,
@@ -633,6 +649,28 @@ export default function ChatPage() {
     }
 
     function handleKeyDown(e: React.KeyboardEvent) {
+        if (e.ctrlKey && e.key === "v") {
+            e.preventDefault();
+            navigator.clipboard.read().then(items => {
+                for (const item of items) {
+                    const imageType = item.types.find(t => t.startsWith("image/"));
+                    if (imageType) {
+                        item.getType(imageType).then(blob => {
+                            const reader = new FileReader();
+                            reader.onload = (ev) => {
+                                const content = ev.target?.result as string;
+                                const n = attachments.filter(a => a.type === "image").length + 1;
+                                insertMarker(`[Image #${n}]`);
+                                setAttachments(prev => [...prev, { type: "image", label: `Image #${n}`, content }]);
+                            };
+                            reader.readAsDataURL(blob);
+                        });
+                        break;
+                    }
+                }
+            }).catch(() => { /* clipboard read denied, ignore */ });
+            return;
+        }
         if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             handleSend();
@@ -656,6 +694,17 @@ export default function ChatPage() {
 
     // ── File Upload Handler ───────────────────────────────────────────────────────
 
+    function insertMarker(marker: string) {
+        const el = inputRef.current;
+        const start = el?.selectionStart ?? input.length;
+        const end = el?.selectionEnd ?? input.length;
+        setInput(prev => prev.slice(0, start) + marker + prev.slice(end));
+        setTimeout(() => {
+            el?.setSelectionRange(start + marker.length, start + marker.length);
+            el?.focus();
+        }, 0);
+    }
+
     async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -663,26 +712,75 @@ export default function ChatPage() {
         setFileUploading(true);
         try {
             const result = await chatApi.extractFileContext(file);
-            const prefix = `[Context from "${result.filename}"${result.truncated ? " (truncated)" : ""}]\n${result.content}\n\n---\n\n`;
-            setInput(prev => prefix + prev);
-            setTimeout(() => inputRef.current?.focus(), 0);
+            const content = `[Context from "${result.filename}"${result.truncated ? " (truncated)" : ""}]\n${result.content}`;
+            const shortName = result.filename.length > 8 ? result.filename.slice(0, 8) : result.filename;
+            setAttachments(prev => [...prev, { type: "file", label: shortName, content }]);
+            insertMarker(`[${shortName}]`);
         } catch (err) {
             console.error("File extract failed:", err);
         } finally {
             setFileUploading(false);
-            // Reset file input so same file can be picked again
             if (fileInputRef.current) fileInputRef.current.value = "";
         }
     }
 
-    // ── Google Drive Search ───────────────────────────────────────────────────────
+    async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+        const items = Array.from(e.clipboardData.items);
+
+        const imageItem = items.find(item => item.type.startsWith("image/"));
+        if (imageItem) {
+            e.preventDefault();
+            const blob = imageItem.getAsFile();
+            if (blob) {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const content = ev.target?.result as string;
+                    const n = attachments.filter(a => a.type === "image").length + 1;
+                    insertMarker(`[Image #${n}]`);
+                    setAttachments(prev => [...prev, { type: "image", label: `Image #${n}`, content }]);
+                };
+                reader.readAsDataURL(blob);
+            }
+            return;
+        }
+
+        const fileItem = items.find(item => item.kind === "file" && !item.type.startsWith("image/"));
+        if (fileItem) {
+            e.preventDefault();
+            const file = fileItem.getAsFile();
+            if (file) {
+                setFileUploading(true);
+                try {
+                    const result = await chatApi.extractFileContext(file);
+                    const content = `[Context from "${result.filename}"${result.truncated ? " (truncated)" : ""}]\n${result.content}`;
+                    const shortName = result.filename.length > 8 ? result.filename.slice(0, 8) : result.filename;
+                    setAttachments(prev => [...prev, { type: "file", label: shortName, content }]);
+                    insertMarker(`[${shortName}]`);
+                } catch (err) {
+                    console.error("File paste failed:", err);
+                } finally {
+                    setFileUploading(false);
+                }
+            }
+            return;
+        }
+
+        const text = e.clipboardData.getData("text/plain");
+        if (text) {
+            e.preventDefault();
+            const n = attachments.filter(a => a.type === "text").length + 1;
+            insertMarker(`[Text #${n}]`);
+            setAttachments(prev => [...prev, { type: "text", label: `Text #${n}`, content: text }]);
+        }
+    }
+
+    // ── Google Drive Picker ───────────────────────────────────────────────────────
 
     async function handleDriveSearch(q: string) {
         setDriveSearchQuery(q);
-        if (!q.trim()) { setDriveFiles([]); return; }
         setDriveSearching(true);
         try {
-            const files = await googleDriveApi.searchFiles(q);
+            const files = await googleDriveApi.searchFiles(q, selectedAgent?.id);
             setDriveFiles(files);
         } catch { setDriveFiles([]); }
         finally { setDriveSearching(false); }
@@ -695,6 +793,51 @@ export default function ChatPage() {
         setDriveSearchQuery("");
         setDriveFiles([]);
         setTimeout(() => inputRef.current?.focus(), 0);
+    }
+
+    async function openGooglePicker() {
+        setShowAttachMenu(false);
+        try {
+            const { access_token, client_id, api_key } = await googleDriveApi.getPickerToken(selectedAgent?.id);
+
+            const loadGapi = () => new Promise<void>((resolve, reject) => {
+                if ((window as unknown as Record<string, unknown>).gapi) { resolve(); return; }
+                const s = document.createElement("script");
+                s.src = "https://apis.google.com/js/api.js";
+                s.onload = () => resolve();
+                s.onerror = () => reject(new Error("Failed to load Google API script"));
+                document.head.appendChild(s);
+            });
+
+            await loadGapi();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const gapi = (window as any).gapi;
+            await new Promise<void>(resolve => gapi.load("picker", resolve));
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const picker = (window as any).google;
+
+            const docsView = new picker.picker.DocsView()
+                .setIncludeFolders(true)
+                .setSelectFolderEnabled(false);
+
+            new picker.picker.PickerBuilder()
+                .addView(docsView)
+                .addView(new picker.picker.DocsUploadView())
+                .setOAuthToken(access_token)
+                .setDeveloperKey(api_key)
+                .setAppId(client_id.split("-")[0])
+                .setCallback((data: { action: string; docs?: { id: string; name: string }[] }) => {
+                    if (data.action === picker.picker.Action.PICKED && data.docs?.length) {
+                        handleDriveFileSelect(data.docs[0]);
+                    }
+                })
+                .build()
+                .setVisible(true);
+        } catch (err) {
+            console.error("Google Picker failed:", err);
+            // Fall back to the search dialog
+            setShowDriveDialog(true);
+        }
     }
 
     // ── Skill Toggle ─────────────────────────────────────────────────────────────
@@ -910,17 +1053,54 @@ export default function ChatPage() {
                             </h1>
 
                             {/* Input box */}
+                            <div className="relative">
+                                {/* Mention List (welcome state) */}
+                                {showMentionList && (
+                                    <div className="absolute bottom-full left-0 mb-2 w-60 bg-white border border-stone-200 rounded-xl shadow-lg p-1.5 z-50">
+                                        <div className="px-3 py-2 border-b border-stone-100 mb-1">
+                                            <p className="text-[10px] font-semibold text-stone-400 uppercase tracking-wider">Delegate to Agent</p>
+                                        </div>
+                                        <div className="max-h-48 overflow-y-auto custom-scrollbar">
+                                            {agents
+                                                .filter(a => a.name.toLowerCase().includes(mentionQuery.toLowerCase()))
+                                                .map(agent => (
+                                                    <button
+                                                        key={agent.id}
+                                                        onClick={() => handleSelectMention(agent.name)}
+                                                        className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-stone-50 transition-colors text-left"
+                                                    >
+                                                        <AgentAvatar name={agent.name} avatarUrl={agent.avatar_url} size="sm" className="!w-6 !h-6 !text-[10px]" />
+                                                        <span className="text-sm text-stone-700">{agent.name}</span>
+                                                    </button>
+                                                ))}
+                                        </div>
+                                    </div>
+                                )}
                             <div className="bg-white border border-stone-200 rounded-2xl shadow-sm p-3 space-y-2">
                                 <textarea
                                     ref={inputRef}
                                     value={input}
                                     onChange={handleInputChange}
                                     onKeyDown={handleKeyDown}
-                                    placeholder={selectedAgent ? `Message ${selectedAgent.name}...` : "Select an agent below to begin..."}
+                                    onPaste={handlePaste}
+                                    placeholder={selectedAgent ? `Message ${selectedAgent.name}... (use @ to delegate to another agent)` : "Select an agent below to begin..."}
                                     disabled={!selectedAgent || streaming}
                                     className="w-full bg-transparent border-none focus:ring-0 focus:outline-none text-sm resize-none custom-scrollbar min-h-[60px] max-h-48 text-stone-800 placeholder:text-stone-400 px-1"
                                     rows={2}
                                 />
+
+                                {/* Attachment chips */}
+                                {attachments.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5 px-1">
+                                        {attachments.map((att, i) => (
+                                            <span key={i} className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
+                                                {att.type === "image" ? <ImageIcon className="w-2.5 h-2.5" /> : att.type === "text" ? <FileText className="w-2.5 h-2.5" /> : <Paperclip className="w-2.5 h-2.5" />}
+                                                {att.label}
+                                                <button onClick={() => setAttachments(prev => prev.filter((_, j) => j !== i))} className="hover:text-sky-900"><X className="w-2.5 h-2.5" /></button>
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
 
                                 {/* Active skill / purpose badges */}
                                 {(conversationSkillIds.length > 0 || activePurpose) && (
@@ -981,7 +1161,7 @@ export default function ChatPage() {
                                                 {/* Google Drive (only if connected) */}
                                                 {driveConnected && (
                                                     <button
-                                                        onClick={() => { setShowAttachMenu(false); setShowDriveDialog(true); }}
+                                                        onClick={openGooglePicker}
                                                         className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-stone-50 transition-colors text-left"
                                                     >
                                                         <HardDrive className="w-4 h-4 text-stone-500" />
@@ -1082,6 +1262,7 @@ export default function ChatPage() {
                                     </button>
                                 </div>
                             </div>
+                            </div>{/* end relative mention wrapper */}
 
                             {/* Suggestion chips */}
                             <div className="grid grid-cols-2 gap-3">
@@ -1236,6 +1417,19 @@ export default function ChatPage() {
                                 )}
 
                                 <div className="bg-white border border-stone-200 rounded-2xl shadow-sm p-3 space-y-2">
+                                    {/* Attachment chips */}
+                                    {attachments.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5 px-1">
+                                            {attachments.map((att, i) => (
+                                                <span key={i} className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
+                                                    {att.type === "image" ? <ImageIcon className="w-2.5 h-2.5" /> : att.type === "text" ? <FileText className="w-2.5 h-2.5" /> : <Paperclip className="w-2.5 h-2.5" />}
+                                                    {att.label}
+                                                    <button onClick={() => setAttachments(prev => prev.filter((_, j) => j !== i))} className="hover:text-sky-900"><X className="w-2.5 h-2.5" /></button>
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
+
                                     {/* Active badges */}
                                     {(conversationSkillIds.length > 0 || activePurpose) && (
                                         <div className="flex flex-wrap gap-1.5 px-1">
@@ -1261,7 +1455,8 @@ export default function ChatPage() {
                                         value={input}
                                         onChange={handleInputChange}
                                         onKeyDown={handleKeyDown}
-                                        placeholder={selectedAgent ? `Message ${selectedAgent.name}...` : "Select an agent to begin"}
+                                        onPaste={handlePaste}
+                                        placeholder={selectedAgent ? `Message ${selectedAgent.name}... (use @ to delegate)` : "Select an agent to begin"}
                                         disabled={!selectedAgent || streaming}
                                         className="w-full bg-transparent border-none focus:ring-0 focus:outline-none text-sm py-1 resize-none custom-scrollbar min-h-[36px] max-h-48 text-stone-800 placeholder:text-stone-400 px-1"
                                         rows={1}
@@ -1300,7 +1495,7 @@ export default function ChatPage() {
                                                     </button>
                                                     {driveConnected && (
                                                         <button
-                                                            onClick={() => { setShowAttachMenu(false); setShowDriveDialog(true); }}
+                                                            onClick={openGooglePicker}
                                                             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-stone-50 transition-colors text-left"
                                                         >
                                                             <HardDrive className="w-4 h-4 text-stone-500" />
@@ -1486,24 +1681,29 @@ export default function ChatPage() {
                                 <div className="flex items-center justify-center py-8">
                                     <Loader2 className="w-5 h-5 text-stone-400 animate-spin" />
                                 </div>
-                            ) : driveFiles.length === 0 && driveSearchQuery ? (
-                                <p className="text-sm text-stone-400 text-center py-6">No files found for &ldquo;{driveSearchQuery}&rdquo;</p>
                             ) : driveFiles.length === 0 ? (
-                                <p className="text-sm text-stone-400 text-center py-6">Type to search your Drive files</p>
+                                <p className="text-sm text-stone-400 text-center py-6">
+                                    {driveSearchQuery ? `No files found for "${driveSearchQuery}"` : "No files found in your Drive"}
+                                </p>
                             ) : (
-                                driveFiles.map(file => (
-                                    <button
-                                        key={file.id}
-                                        onClick={() => handleDriveFileSelect(file)}
-                                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-stone-50 transition-colors text-left"
-                                    >
-                                        <HardDrive className="w-4 h-4 text-stone-400 flex-shrink-0" />
-                                        <div className="flex-1 min-w-0">
-                                            <p className="text-sm text-stone-700 truncate">{file.name}</p>
-                                            <p className="text-[10px] text-stone-400">{new Date(file.modifiedTime).toLocaleDateString()}</p>
-                                        </div>
-                                    </button>
-                                ))
+                                driveFiles.map(file => {
+                                    const isFolder = file.mimeType === "application/vnd.google-apps.folder";
+                                    return (
+                                        <button
+                                            key={file.id}
+                                            onClick={() => handleDriveFileSelect(file)}
+                                            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-stone-50 transition-colors text-left"
+                                        >
+                                            {isFolder
+                                                ? <Folder className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                                                : <HardDrive className="w-4 h-4 text-stone-400 flex-shrink-0" />}
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm text-stone-700 truncate">{file.name}</p>
+                                                <p className="text-[10px] text-stone-400">{new Date(file.modifiedTime).toLocaleDateString()}</p>
+                                            </div>
+                                        </button>
+                                    );
+                                })
                             )}
                         </div>
                         <div className="p-3 border-t border-stone-100">

@@ -23,11 +23,12 @@ const nextConfig = {
             key: "Content-Security-Policy",
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval'",  // unsafe-eval needed by Next.js dev
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://apis.google.com",
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
               "font-src 'self'",
               "connect-src 'self' ws: wss: http://localhost:8000 https:",
+              "frame-src https://docs.google.com https://drive.google.com",
               "frame-ancestors 'none'",
             ].join("; "),
           },

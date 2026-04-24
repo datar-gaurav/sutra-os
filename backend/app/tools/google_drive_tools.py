@@ -54,9 +54,9 @@ async def _get_drive_credentials(agent_id: str):
         )
         rows = result.scalars().all()
 
-    agent_specific = next((r for r in rows if r.agent_id == agent_id), None)
+    agent_specific = next((r for r in rows if r.agent_id == agent_id), None) if agent_id else None
     system_wide = next((r for r in rows if r.agent_id is None), None)
-    row = agent_specific or system_wide
+    row = agent_specific or system_wide or (rows[0] if rows else None)
 
     if not row or not row.credentials_enc:
         raise ValueError(
