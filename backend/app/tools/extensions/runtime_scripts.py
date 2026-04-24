@@ -25,8 +25,8 @@ from langchain_core.tools import tool
 
 EXTENSION_MANIFEST = {
     "id": "runtime_scripts",
-    "name": "Runtime Scripts",
-    "description": "Queue autonomous coding tasks and trigger the runtime_scripts runner (tasks.md + scripts/run.sh)",
+    "name": "Background Task",
+    "description": "Queue background tasks and trigger the autonomous runner (tasks.md + scripts/run.sh)",
     "icon": "workflow",
     "version": "1.0.0",
     "author": "Sutra Community",
@@ -34,7 +34,7 @@ EXTENSION_MANIFEST = {
     "config_fields": [
         {
             "key": "base_path",
-            "label": "runtime_scripts repo path",
+            "label": "Background-task runner repo path",
             "secret": False,
             "placeholder": "/Users/you/Coding/git/runtime_scripts",
         },
@@ -192,10 +192,11 @@ def create_tools(agent_id: str):
         test: str = "npm test",
         note: str = "",
     ) -> str:
-        """Append a task to the runtime_scripts tasks.md queue under `## pending`.
+        """Add a background task to the runner's tasks.md queue under `## pending`.
 
-        The autonomous runner picks the highest-priority pending task on its
-        next run. Task IDs must be unique across the whole tasks.md file.
+        Use this when the user asks to queue, schedule, or add a background task
+        for autonomous execution. The runner picks the highest-priority pending
+        task on its next run. Task IDs must be unique across the whole tasks.md.
 
         Args:
             task_id: Unique slug for this task (e.g. 'fix-login-500').
@@ -251,7 +252,7 @@ def create_tools(agent_id: str):
 
     @tool
     async def runtime_scripts_trigger_run() -> str:
-        """Fire the runtime_scripts orchestrator (scripts/run.sh).
+        """Trigger the background-task runner (scripts/run.sh).
 
         Spawns run.sh as a detached background process and returns immediately
         with a log path. run.sh enforces its own safety gates (lockfile,
@@ -287,7 +288,7 @@ def create_tools(agent_id: str):
 
     @tool
     async def runtime_scripts_list_tasks() -> str:
-        """Show tasks.md content by section (pending / in_progress / done)."""
+        """List background tasks by section (pending / in_progress / done)."""
         base = await _get_base_path(agent_id)
         tasks_path = base / "tasks.md"
         if not tasks_path.is_file():
@@ -317,7 +318,7 @@ def create_tools(agent_id: str):
 
     @tool
     async def runtime_scripts_get_status() -> str:
-        """Report runner status: active task, plan presence, escalations, recent logs."""
+        """Report background-task runner status: active task, plan presence, escalations, recent logs."""
         base = await _get_base_path(agent_id)
         state = base / "state"
         logs = base / "logs"
