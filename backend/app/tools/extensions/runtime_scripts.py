@@ -25,8 +25,8 @@ from langchain_core.tools import tool
 
 EXTENSION_MANIFEST = {
     "id": "runtime_scripts",
-    "name": "Background Task",
-    "description": "Queue background tasks and trigger the autonomous runner (tasks.md + scripts/run.sh)",
+    "name": "Dispatcher",
+    "description": "Dispatch tasks to the autonomous runner (tasks.md + scripts/run.sh)",
     "icon": "workflow",
     "version": "1.0.0",
     "author": "Sutra Community",
@@ -34,7 +34,7 @@ EXTENSION_MANIFEST = {
     "config_fields": [
         {
             "key": "base_path",
-            "label": "Background-task runner repo path",
+            "label": "Dispatcher runner repo path",
             "secret": False,
             "placeholder": "/Users/you/Coding/git/runtime_scripts",
         },
@@ -192,11 +192,12 @@ def create_tools(agent_id: str):
         test: str = "npm test",
         note: str = "",
     ) -> str:
-        """Add a background task to the runner's tasks.md queue under `## pending`.
+        """Dispatch a task to the runner's tasks.md queue under `## pending`.
 
-        Use this when the user asks to queue, schedule, or add a background task
-        for autonomous execution. The runner picks the highest-priority pending
-        task on its next run. Task IDs must be unique across the whole tasks.md.
+        Use this when the user asks to dispatch, queue, schedule, or hand off a
+        task to the dispatcher for autonomous execution. The runner picks the
+        highest-priority pending task on its next run. Task IDs must be unique
+        across the whole tasks.md.
 
         Args:
             task_id: Unique slug for this task (e.g. 'fix-login-500').
@@ -252,7 +253,7 @@ def create_tools(agent_id: str):
 
     @tool
     async def runtime_scripts_trigger_run() -> str:
-        """Trigger the background-task runner (scripts/run.sh).
+        """Trigger the dispatcher runner (scripts/run.sh).
 
         Spawns run.sh as a detached background process and returns immediately
         with a log path. run.sh enforces its own safety gates (lockfile,
@@ -288,7 +289,7 @@ def create_tools(agent_id: str):
 
     @tool
     async def runtime_scripts_list_tasks() -> str:
-        """List background tasks by section (pending / in_progress / done)."""
+        """List dispatcher tasks by section (pending / in_progress / done)."""
         base = await _get_base_path(agent_id)
         tasks_path = base / "tasks.md"
         if not tasks_path.is_file():
@@ -318,7 +319,7 @@ def create_tools(agent_id: str):
 
     @tool
     async def runtime_scripts_get_status() -> str:
-        """Report background-task runner status: active task, plan presence, escalations, recent logs."""
+        """Report dispatcher runner status: active task, plan presence, escalations, recent logs."""
         base = await _get_base_path(agent_id)
         state = base / "state"
         logs = base / "logs"
