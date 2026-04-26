@@ -230,6 +230,7 @@ export default function ChatPage() {
     const [streamToolSteps, setStreamToolSteps] = useState<ToolStep[]>([]);
     const [inlineApprovals, setInlineApprovals] = useState<InlineApproval[]>([]);
     const [showAgentPicker, setShowAgentPicker] = useState(false);
+    const [agentPickerSearch, setAgentPickerSearch] = useState("");
     const [searchQuery, setSearchQuery] = useState("");
     const [user, setUser] = useState<{ username: string; role: string } | null>(null);
     const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -306,7 +307,7 @@ export default function ChatPage() {
 
     useEffect(() => {
         if (!showAgentPicker) return;
-        const handler = () => setShowAgentPicker(false);
+        const handler = () => { setShowAgentPicker(false); setAgentPickerSearch(""); };
         document.addEventListener("click", handler);
         return () => document.removeEventListener("click", handler);
     }, [showAgentPicker]);
@@ -989,7 +990,7 @@ export default function ChatPage() {
                     {hasConversation && (
                         <div className="relative" onClick={e => e.stopPropagation()}>
                             <button
-                                onClick={() => setShowAgentPicker(v => !v)}
+                                onClick={() => { setAgentPickerSearch(""); setShowAgentPicker(v => !v); }}
                                 className="flex items-center gap-2 hover:bg-stone-50 px-2 py-1 rounded-lg transition-colors"
                             >
                                 {selectedAgent ? (
@@ -1005,21 +1006,37 @@ export default function ChatPage() {
                             </button>
 
                             {showAgentPicker && (
-                                <div className="absolute left-0 top-full mt-2 w-56 bg-white border border-stone-200 rounded-xl p-1.5 z-50 shadow-lg">
-                                    {agents.map((agent) => (
-                                        <button
-                                            key={agent.id}
-                                            onClick={() => { setSelectedAgent(agent); setShowAgentPicker(false); handleNewChat(agent); }}
-                                            className={`w-full flex items-center gap-3 p-2.5 rounded-lg transition-colors text-left ${selectedAgent?.id === agent.id ? "bg-stone-100" : "hover:bg-stone-50"}`}
-                                        >
-                                            <AgentAvatar name={agent.name} avatarUrl={agent.avatar_url} size="sm" />
-                                            <div className="flex-1">
-                                                <p className="text-sm font-medium text-stone-700">{agent.name}</p>
-                                                <p className="text-[10px] text-stone-400 flex items-center gap-1"><Cpu className="w-2.5 h-2.5" />{agent.llm_model}</p>
-                                            </div>
-                                            {selectedAgent?.id === agent.id && <CheckCircle2 className="w-4 h-4 text-stone-500" />}
-                                        </button>
-                                    ))}
+                                <div className="absolute left-0 top-full mt-2 w-64 bg-white border border-stone-200 rounded-xl p-1.5 z-50 shadow-lg">
+                                    <div className="px-2 pb-1.5">
+                                        <input
+                                            autoFocus
+                                            type="text"
+                                            placeholder="Search agents..."
+                                            value={agentPickerSearch}
+                                            onChange={e => setAgentPickerSearch(e.target.value)}
+                                            onClick={e => e.stopPropagation()}
+                                            className="w-full text-sm px-2 py-1.5 rounded-lg border border-stone-200 focus:outline-none focus:border-stone-400 text-stone-700 placeholder-stone-400"
+                                        />
+                                    </div>
+                                    <div className="max-h-64 overflow-y-auto">
+                                        {agents.filter(a => a.name.toLowerCase().includes(agentPickerSearch.toLowerCase())).map((agent) => (
+                                            <button
+                                                key={agent.id}
+                                                onClick={() => { setSelectedAgent(agent); setShowAgentPicker(false); setAgentPickerSearch(""); handleNewChat(agent); }}
+                                                className={`w-full flex items-center gap-3 p-2.5 rounded-lg transition-colors text-left ${selectedAgent?.id === agent.id ? "bg-stone-100" : "hover:bg-stone-50"}`}
+                                            >
+                                                <AgentAvatar name={agent.name} avatarUrl={agent.avatar_url} size="sm" />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-sm font-medium text-stone-700 truncate">{agent.name}</p>
+                                                    <p className="text-[10px] text-stone-400 flex items-center gap-1"><Cpu className="w-2.5 h-2.5" />{agent.llm_model}</p>
+                                                </div>
+                                                {selectedAgent?.id === agent.id && <CheckCircle2 className="w-4 h-4 text-stone-500 shrink-0" />}
+                                            </button>
+                                        ))}
+                                        {agents.filter(a => a.name.toLowerCase().includes(agentPickerSearch.toLowerCase())).length === 0 && (
+                                            <p className="text-sm text-stone-400 p-3">No agents match.</p>
+                                        )}
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -1210,7 +1227,7 @@ export default function ChatPage() {
                                     {/* Agent picker pill */}
                                     <div className="relative" onClick={e => e.stopPropagation()}>
                                         <button
-                                            onClick={() => setShowAgentPicker(v => !v)}
+                                            onClick={() => { setAgentPickerSearch(""); setShowAgentPicker(v => !v); }}
                                             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-200 hover:border-stone-300 hover:bg-stone-50 transition-colors text-sm text-stone-600"
                                         >
                                             {selectedAgent ? (
@@ -1225,25 +1242,40 @@ export default function ChatPage() {
                                         </button>
 
                                         {showAgentPicker && (
-                                            <div className="absolute bottom-full right-0 mb-2 w-56 bg-white border border-stone-200 rounded-xl p-1.5 z-50 shadow-lg">
-                                                {agents.length === 0 ? (
-                                                    <p className="text-sm text-stone-400 p-3">No running agents.</p>
-                                                ) : (
-                                                    agents.map((agent) => (
-                                                        <button
-                                                            key={agent.id}
-                                                            onClick={() => { setSelectedAgent(agent); setShowAgentPicker(false); }}
-                                                            className={`w-full flex items-center gap-3 p-2.5 rounded-lg transition-colors text-left ${selectedAgent?.id === agent.id ? "bg-stone-100" : "hover:bg-stone-50"}`}
-                                                        >
-                                                            <AgentAvatar name={agent.name} avatarUrl={agent.avatar_url} size="sm" />
-                                                            <div className="flex-1">
-                                                                <p className="text-sm font-medium text-stone-700">{agent.name}</p>
-                                                                <p className="text-[10px] text-stone-400">{agent.llm_model}</p>
-                                                            </div>
-                                                            {selectedAgent?.id === agent.id && <CheckCircle2 className="w-4 h-4 text-stone-500" />}
-                                                        </button>
-                                                    ))
-                                                )}
+                                            <div className="absolute bottom-full right-0 mb-2 w-64 bg-white border border-stone-200 rounded-xl p-1.5 z-50 shadow-lg">
+                                                <div className="px-2 pb-1.5">
+                                                    <input
+                                                        autoFocus
+                                                        type="text"
+                                                        placeholder="Search agents..."
+                                                        value={agentPickerSearch}
+                                                        onChange={e => setAgentPickerSearch(e.target.value)}
+                                                        onClick={e => e.stopPropagation()}
+                                                        className="w-full text-sm px-2 py-1.5 rounded-lg border border-stone-200 focus:outline-none focus:border-stone-400 text-stone-700 placeholder-stone-400"
+                                                    />
+                                                </div>
+                                                <div className="max-h-64 overflow-y-auto">
+                                                    {agents.length === 0 ? (
+                                                        <p className="text-sm text-stone-400 p-3">No running agents.</p>
+                                                    ) : agents.filter(a => a.name.toLowerCase().includes(agentPickerSearch.toLowerCase())).length === 0 ? (
+                                                        <p className="text-sm text-stone-400 p-3">No agents match.</p>
+                                                    ) : (
+                                                        agents.filter(a => a.name.toLowerCase().includes(agentPickerSearch.toLowerCase())).map((agent) => (
+                                                            <button
+                                                                key={agent.id}
+                                                                onClick={() => { setSelectedAgent(agent); setShowAgentPicker(false); setAgentPickerSearch(""); }}
+                                                                className={`w-full flex items-center gap-3 p-2.5 rounded-lg transition-colors text-left ${selectedAgent?.id === agent.id ? "bg-stone-100" : "hover:bg-stone-50"}`}
+                                                            >
+                                                                <AgentAvatar name={agent.name} avatarUrl={agent.avatar_url} size="sm" />
+                                                                <div className="flex-1 min-w-0">
+                                                                    <p className="text-sm font-medium text-stone-700 truncate">{agent.name}</p>
+                                                                    <p className="text-[10px] text-stone-400">{agent.llm_model}</p>
+                                                                </div>
+                                                                {selectedAgent?.id === agent.id && <CheckCircle2 className="w-4 h-4 text-stone-500 shrink-0" />}
+                                                            </button>
+                                                        ))
+                                                    )}
+                                                </div>
                                             </div>
                                         )}
                                     </div>

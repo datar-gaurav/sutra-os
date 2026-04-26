@@ -82,6 +82,8 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       MLFLOW_ENABLED: "true"
       MLFLOW_TRACKING_URI: http://mlflow:5000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backend:/app
     depends_on:

@@ -212,6 +212,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Dash agent seed skipped: {e}")
 
+    # Seed the Dispatcher agent (owns the runtime_scripts extension)
+    try:
+        from app.db.seed_dispatcher_agent import seed_dispatcher_agent
+        from app.db.session import async_session_factory
+        async with async_session_factory() as db:
+            await seed_dispatcher_agent(db)
+    except Exception as e:
+        logger.warning(f"Dispatcher agent seed skipped: {e}")
+
+    # Seed the runtime_scripts integration row (bridge URL + encrypted token)
+    try:
+        from app.db.seed_runtime_scripts_integration import seed_runtime_scripts_integration
+        from app.db.session import async_session_factory
+        async with async_session_factory() as db:
+            await seed_runtime_scripts_integration(db)
+    except Exception as e:
+        logger.warning(f"runtime_scripts integration seed skipped: {e}")
+
     # Start agent watchdog
     try:
         from app.core.watchdog import watchdog

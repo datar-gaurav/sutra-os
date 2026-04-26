@@ -522,11 +522,16 @@ class LLMRegistry:
                 )
                 response.raise_for_status()
                 data = response.json()
+                seen = set()
                 models = []
                 for m in data.get("data", []):
+                    mid = m["id"]
+                    if mid in seen:
+                        continue
+                    seen.add(mid)
                     models.append({
-                        "id": m["id"],
-                        "name": m.get("id", m["id"]),
+                        "id": mid,
+                        "name": m.get("id", mid),
                         "context_length": m.get("context_window", 0),
                         "description": m.get("description", ""),
                     })

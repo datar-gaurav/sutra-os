@@ -585,12 +585,9 @@ class Orchestrator:
             tool_calls: list[dict] = []
             # Track last complete AI message per LLM call as a fallback
             _last_ai_text: str = ""
+            _event_gen = executor.astream_events({"messages": messages}, config=config, version="v2")
             try:
-                async for event in executor.astream_events(
-                    {"messages": messages},
-                    config=config,
-                    version="v2",
-                ):
+                async for event in _event_gen:
                     kind = event["event"]
                     if kind == "on_chat_model_stream":
                         content = _extract_text(event["data"]["chunk"].content)
@@ -678,6 +675,10 @@ class Orchestrator:
                 return  # Success — exit the fallback loop
 
             except CircuitOpenError as e:
+                try:
+                    await _event_gen.aclose()
+                except Exception:
+                    pass
                 # Circuit open — try fallback if purpose-based
                 if routed_provider and routed_model:
                     logger.warning(
@@ -703,6 +704,10 @@ class Orchestrator:
                 return
 
             except Exception as e:
+                try:
+                    await _event_gen.aclose()
+                except Exception:
+                    pass
                 error_str = str(e).lower()
 
                 # Auto-fallback for retriable LLM errors (rate limit, model not found, etc.)
@@ -725,19 +730,27 @@ class Orchestrator:
                         trimmed = emergency_trim(messages)
                         cb2 = UsageCallbackHandler()
                         _retry_last_ai_text = ""
-                        async for event in executor.astream_events(
+                        _retry_gen = executor.astream_events(
                             {"messages": trimmed}, config={"callbacks": [cb2]}, version="v2",
-                        ):
-                            kind = event["event"]
-                            if kind == "on_chat_model_stream":
-                                content = _extract_text(event["data"]["chunk"].content)
-                                if content:
-                                    full_output += content
-                                    yield {"type": "token", "content": content}
-                            elif kind == "on_chat_model_end":
-                                output_msg = event.get("data", {}).get("output")
-                                if output_msg is not None:
-                                    _retry_last_ai_text = _extract_text(getattr(output_msg, "content", "") or "")
+                        )
+                        try:
+                            async for event in _retry_gen:
+                                kind = event["event"]
+                                if kind == "on_chat_model_stream":
+                                    content = _extract_text(event["data"]["chunk"].content)
+                                    if content:
+                                        full_output += content
+                                        yield {"type": "token", "content": content}
+                                elif kind == "on_chat_model_end":
+                                    output_msg = event.get("data", {}).get("output")
+                                    if output_msg is not None:
+                                        _retry_last_ai_text = _extract_text(getattr(output_msg, "content", "") or "")
+                        except Exception:
+                            try:
+                                await _retry_gen.aclose()
+                            except Exception:
+                                pass
+                            raise
                         if not full_output and _retry_last_ai_text:
                             full_output = _retry_last_ai_text
                             yield {"type": "token", "content": full_output}

@@ -146,6 +146,51 @@ fi
 
 echo ""
 
+# ── 4b. Dispatcher bridge config ─────────────────
+
+info "Configuring Dispatcher bridge..."
+
+# Token (generate once, never rotate automatically)
+EXISTING_BRIDGE_TOKEN=$(grep "^DISPATCHER_BRIDGE_TOKEN=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+if [ -z "$EXISTING_BRIDGE_TOKEN" ]; then
+    BRIDGE_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))" 2>/dev/null || true)
+    if [ -n "$BRIDGE_TOKEN" ]; then
+        set_env "DISPATCHER_BRIDGE_TOKEN" "$BRIDGE_TOKEN"
+        ok "Generated DISPATCHER_BRIDGE_TOKEN"
+    else
+        warn "Could not generate DISPATCHER_BRIDGE_TOKEN — set it manually in backend/.env"
+    fi
+else
+    ok "DISPATCHER_BRIDGE_TOKEN already set — keeping existing value"
+fi
+
+# Port (default 7475, only write if absent)
+EXISTING_BRIDGE_PORT=$(grep "^DISPATCHER_BRIDGE_PORT=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+if [ -z "$EXISTING_BRIDGE_PORT" ]; then
+    set_env "DISPATCHER_BRIDGE_PORT" "7475"
+    ok "Set DISPATCHER_BRIDGE_PORT=7475"
+else
+    ok "DISPATCHER_BRIDGE_PORT already set to ${EXISTING_BRIDGE_PORT}"
+fi
+
+# Base path (prompt once; re-use existing if already set)
+EXISTING_BASE_PATH=$(grep "^DISPATCHER_BASE_PATH=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+if [ -z "$EXISTING_BASE_PATH" ]; then
+    echo ""
+    ask "Enter the absolute path to your runtime_scripts repo on this host:"
+    read -rp "   (leave blank to skip and set manually later): " RUNNER_PATH
+    if [ -n "$RUNNER_PATH" ]; then
+        set_env "DISPATCHER_BASE_PATH" "$RUNNER_PATH"
+        ok "Set DISPATCHER_BASE_PATH=${RUNNER_PATH}"
+    else
+        warn "DISPATCHER_BASE_PATH not set — add it to backend/.env before starting the bridge."
+    fi
+else
+    ok "DISPATCHER_BASE_PATH already set to ${EXISTING_BASE_PATH}"
+fi
+
+echo ""
+
 # ── 5. Build & start services ────────────────────
 
 echo -e "${BOLD}Building Docker images (this may take a few minutes the first time)...${RESET}"
@@ -209,4 +254,8 @@ echo "  ./stop.sh       — Stop all services"
 echo "  ./restart.sh    — Restart all services"
 echo "  ./start.sh      — Start without rebuilding"
 echo "  docker compose logs -f — Tail live logs"
+echo ""
+echo -e "${CYAN}Dispatcher bridge (run on host, keeps running in background):${RESET}"
+echo "  python3 scripts/dispatcher_bridge.py &"
+echo "  See docs/dispatcher.md for launchd/systemd persistence."
 echo ""
