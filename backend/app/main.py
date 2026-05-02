@@ -11,7 +11,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.api.routes import agents, auth, chat, llms, memory, system, tools, workflows, jobs, mcp_servers, monitor
-from app.api.routes import approvals, audit, discussions, traces, tasks, roles, teams
+from app.api.routes import approvals, audit, councils, discussions, traces, tasks, roles, teams
 from app.api.routes import goals, triggers, financials
 from app.api.routes import batch_jobs as batch_jobs_routes
 from app.api.routes import knowledge
@@ -52,6 +52,7 @@ import app.models.user  # ensure User table is registered  # noqa: F401
 import app.models.memory  # ensure Memory table is registered  # noqa: F401
 import app.models.approval_request  # ensure ApprovalRequest table is registered  # noqa: F401
 import app.models.discussion  # ensure Discussion table is registered  # noqa: F401
+import app.models.council  # ensure Council table is registered  # noqa: F401
 import app.models.project  # ensure Project table is registered  # noqa: F401
 import app.models.task  # ensure Task table is registered  # noqa: F401
 import app.models.role  # ensure AgentRole table is registered  # noqa: F401
@@ -924,6 +925,7 @@ app.include_router(traces.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(audit.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(tasks.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(discussions.router, prefix="/api", dependencies=_auth_dep)
+app.include_router(councils.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(approvals.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(roles.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(teams.router, prefix="/api", dependencies=_auth_dep)
