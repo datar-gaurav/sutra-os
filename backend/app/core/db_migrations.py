@@ -246,6 +246,35 @@ MIGRATIONS: list[tuple[str, str]] = [
         "job_applications.review_log",
         "ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS review_log JSONB",
     ),
+    # ── Voice integration (per-agent voice settings) ─────────────────────────
+    (
+        "agents.voice_enabled",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS voice_enabled BOOLEAN NOT NULL DEFAULT false",
+    ),
+    (
+        "agents.voice_id",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS voice_id VARCHAR(100)",
+    ),
+    (
+        "agents.voice_provider_tts",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS voice_provider_tts VARCHAR(50)",
+    ),
+    (
+        "agents.voice_provider_stt",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS voice_provider_stt VARCHAR(50)",
+    ),
+    (
+        "agents.voice_speed",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS voice_speed FLOAT NOT NULL DEFAULT 1.0",
+    ),
+    (
+        "agents.telegram_voice_enabled",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS telegram_voice_enabled BOOLEAN NOT NULL DEFAULT false",
+    ),
+    (
+        "agents.web_voice_enabled",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS web_voice_enabled BOOLEAN NOT NULL DEFAULT false",
+    ),
 ]
 
 

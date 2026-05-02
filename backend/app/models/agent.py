@@ -103,6 +103,20 @@ class Agent(Base, TimestampMixin):
     # Daily token budget across all invocations (0 = unlimited)
     max_tokens_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # ── Voice ──────────────────────────────────────────────────────────────────
+    # Per-agent voice settings. When voice_enabled=True, the agent will reply
+    # with synthesised audio on channels that opt in (telegram_voice_enabled,
+    # web_voice_enabled). STT for inbound audio is always available regardless
+    # of voice_enabled.
+    voice_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    voice_provider_tts: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    voice_provider_stt: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    voice_speed: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    # Per-channel voice opt-in (D3 — configurable per agent + channel)
+    telegram_voice_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    web_voice_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     # Metadata
     metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=True, default=dict)
 

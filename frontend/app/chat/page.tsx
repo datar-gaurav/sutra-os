@@ -55,7 +55,9 @@ import {
     type LLMPurpose,
 } from "@/lib/api";
 import { wsClient } from "@/lib/ws";
+import { voiceApi } from "@/lib/api";
 import AgentAvatar from "@/components/AgentAvatar";
+import MicButton from "@/components/voice/MicButton";
 
 // ── Tool Call Step ─────────────────────────────────────────────────────────────
 
@@ -469,6 +471,32 @@ export default function ChatPage() {
         }));
     };
 
+    function handleVoiceTranscript(text: string) {
+        setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+        setTimeout(() => inputRef.current?.focus(), 0);
+    }
+
+    async function playAgentReply(text: string) {
+        if (!selectedAgent || !text.trim()) return;
+        if (!selectedAgent.voice_enabled || !selectedAgent.web_voice_enabled) return;
+        try {
+            const url = await voiceApi.synthesizeUrl(
+                text,
+                selectedAgent.voice_id || undefined,
+                selectedAgent.voice_speed || 1.0,
+                selectedAgent.voice_provider_tts || undefined,
+            );
+            const audio = new Audio(url);
+            audio.onended = () => URL.revokeObjectURL(url);
+            audio.play().catch((err) => {
+                console.warn("autoplay blocked:", err);
+                URL.revokeObjectURL(url);
+            });
+        } catch (err) {
+            console.warn("TTS playback failed:", err);
+        }
+    }
+
     async function handleSend() {
         if ((!input.trim() && attachments.length === 0) || !selectedAgent || streaming) return;
 
@@ -577,6 +605,8 @@ export default function ChatPage() {
             };
             setMessages((prev) => [...prev, assistantMsg]);
             setStreamContent("");
+            // Fire-and-forget: voice playback if the agent + channel are opted in
+            playAgentReply(fullContent);
         } catch (err) {
             console.error("Chat error:", err);
             const errorMsg: ChatMessage = {
@@ -1280,6 +1310,13 @@ export default function ChatPage() {
                                         )}
                                     </div>
 
+                                    {/* Mic */}
+                                    <MicButton
+                                        onTranscript={handleVoiceTranscript}
+                                        provider={selectedAgent?.voice_provider_stt}
+                                        disabled={!selectedAgent || streaming}
+                                    />
+
                                     {/* Send button */}
                                     <button
                                         onClick={handleSend}
@@ -1567,6 +1604,13 @@ export default function ChatPage() {
 
                                         <div className="flex-1" />
 
+                                        <MicButton
+                                            onTranscript={handleVoiceTranscript}
+                                            provider={selectedAgent?.voice_provider_stt}
+                                            disabled={!selectedAgent || streaming}
+                                            compact
+                                        />
+
                                         <button
                                             onClick={handleSend}
                                             disabled={!input.trim() || !selectedAgent || streaming}
@@ -1583,7 +1627,8 @@ export default function ChatPage() {
 
                                 <p className="text-[10px] text-center text-stone-400 mt-1.5">
                                     <kbd className="px-1.5 py-0.5 rounded bg-stone-100 text-[9px] border border-stone-200">Enter</kbd> to send &nbsp;
-                                    <kbd className="px-1.5 py-0.5 rounded bg-stone-100 text-[9px] border border-stone-200">Shift+Enter</kbd> for new line
+                                    <kbd className="px-1.5 py-0.5 rounded bg-stone-100 text-[9px] border border-stone-200">Shift+Enter</kbd> for new line &nbsp;
+                                    <kbd className="px-1.5 py-0.5 rounded bg-stone-100 text-[9px] border border-stone-200">Hold mic</kbd> to speak
                                 </p>
                             </div>
                         </div>

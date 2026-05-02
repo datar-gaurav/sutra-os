@@ -175,6 +175,22 @@ class Settings(BaseSettings):
     rag_eval_judge_provider: str = "anthropic"
     rag_eval_judge_model: str = "claude-haiku-4-5-20251001"
 
+    # ── Voice (STT + TTS) ──────────────────────────────────────────────────
+    # Local services run on the host (Metal-accelerated). Backend in Docker
+    # reaches them via host.docker.internal; local-dev uses localhost.
+    whisper_local_url: str = "http://host.docker.internal:8081"  # whisper.cpp server
+    kokoro_local_url: str = "http://host.docker.internal:8880"   # kokoro-fastapi (OpenAI-compatible)
+    xtts_local_url: str = "http://host.docker.internal:8020"     # XTTS-v2 server (content pipeline only)
+    # Cloud fallbacks (optional — managed via UI vault, seeded from env)
+    elevenlabs_api_key: str = ""
+    openai_tts_api_key: str = ""  # if empty, falls back to openai_api_key
+    # Voice defaults
+    voice_default_tts_provider: str = "kokoro_local"
+    voice_default_stt_provider: str = "whisper_local"
+    voice_default_voice_id: str = "af_bella"  # Kokoro female default
+    voice_max_audio_seconds: int = 120  # cap on inbound voice length
+    voice_telegram_summary_chars: int = 150  # transcript echo length on Telegram
+
     # ── Rate Limits ────────────────────────────────────────────────────────
     rate_limit_chat: str = "200/hour"
     rate_limit_auth_login: str = "10/hour"

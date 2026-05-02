@@ -33,6 +33,7 @@ from app.api.routes import env_vars as env_vars_routes
 from app.api.routes import rate_limits as rate_limits_routes
 from app.api.routes import purposes as purposes_routes
 from app.api.routes import job_applications as job_applications_routes
+from app.api.routes import voice as voice_routes
 from app.api.websocket import websocket_endpoint
 from app.config import settings
 from app.core.logging_config import configure_logging
@@ -190,6 +191,13 @@ async def lifespan(app: FastAPI):
         logger.info("✅ LLM providers loaded into registry.")
     except Exception as e:
         logger.warning(f"LLM provider registry load skipped: {e}")
+
+    # Seed voice (STT + TTS) registry from settings + env-loaded API keys
+    try:
+        from app.core.voice_registry import voice_registry
+        voice_registry.seed_defaults()
+    except Exception as e:
+        logger.warning(f"Voice registry seed skipped: {e}")
 
     # Restore running agents
     try:
@@ -942,6 +950,7 @@ app.include_router(rate_limits_routes.router, prefix="/api", dependencies=_auth_
 app.include_router(purposes_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(job_applications_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(job_applications_routes.public_router, prefix="/api/public")
+app.include_router(voice_routes.router, prefix="/api", dependencies=_auth_dep)
 # Public webhook endpoint — token-protected, no JWT required
 from app.api.routes.triggers import public_router as triggers_public_router
 app.include_router(triggers_public_router, prefix="/api/public")

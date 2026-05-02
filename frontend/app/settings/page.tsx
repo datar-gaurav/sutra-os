@@ -16,9 +16,10 @@ import {
     Terminal,
     Settings2,
     RotateCcw,
+    Mic,
 } from "lucide-react";
 import {
-    llmsApi, apiKeysApi, systemSettingsApi, envVarsApi,
+    llmsApi, apiKeysApi, systemSettingsApi, envVarsApi, voiceApi,
     type LLMProvider, type OllamaModel, type ApiKey, type ApiKeyCreated,
     type SystemSettingSchema, type EnvVarItem,
 } from "@/lib/api";
@@ -51,6 +52,24 @@ export default function SettingsPage() {
     const [newSupportsTools, setNewSupportsTools] = useState(true);
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
+
+    // Voice health state
+    const [voiceHealth, setVoiceHealth] = useState<{ stt: Record<string, boolean>; tts: Record<string, boolean> } | null>(null);
+    const [voiceHealthLoading, setVoiceHealthLoading] = useState(false);
+
+    async function refreshVoiceHealth() {
+        setVoiceHealthLoading(true);
+        try {
+            const h = await voiceApi.health();
+            setVoiceHealth(h);
+        } catch {
+            setVoiceHealth({ stt: {}, tts: {} });
+        } finally {
+            setVoiceHealthLoading(false);
+        }
+    }
+
+    useEffect(() => { refreshVoiceHealth(); }, []);
 
     // API Keys state
     const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
@@ -561,6 +580,68 @@ export default function SettingsPage() {
                             </div>
                         );
                     })}
+                </div>
+            </div>
+
+            {/* Voice Providers */}
+            <div className="glass-card p-6">
+                <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <Mic className="w-5 h-5 text-rose-500" />
+                        Voice Providers
+                    </h2>
+                    <button
+                        onClick={refreshVoiceHealth}
+                        disabled={voiceHealthLoading}
+                        className="btn-secondary flex items-center gap-1.5 text-sm"
+                    >
+                        <RefreshCw className={`w-4 h-4 ${voiceHealthLoading ? "animate-spin" : ""}`} />
+                        Refresh
+                    </button>
+                </div>
+                <p className="text-xs text-gray-500 mb-4">
+                    Live status of speech-to-text and text-to-speech providers. Local services
+                    (whisper.cpp, kokoro-fastapi) run natively on the host for Metal-accelerated
+                    inference. Cloud fallbacks unlock when their API keys are present in Env Vars
+                    (e.g. <code className="px-1 py-0.5 bg-surface-2 dark:bg-surface-dark3 rounded">ELEVENLABS_API_KEY</code>).
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <h3 className="text-xs font-bold uppercase text-gray-500 dark:text-gray-400 mb-2">Speech-to-Text</h3>
+                        <ul className="space-y-1.5">
+                            {Object.entries(voiceHealth?.stt || {}).length === 0 && (
+                                <li className="text-xs text-gray-400">No STT providers registered</li>
+                            )}
+                            {Object.entries(voiceHealth?.stt || {}).map(([name, ok]) => (
+                                <li key={name} className="flex items-center gap-2 text-sm">
+                                    {ok ? (
+                                        <CheckCircle2 className="w-4 h-4 text-green-500" />
+                                    ) : (
+                                        <XCircle className="w-4 h-4 text-gray-400" />
+                                    )}
+                                    <code className="text-xs">{name}</code>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                    <div>
+                        <h3 className="text-xs font-bold uppercase text-gray-500 dark:text-gray-400 mb-2">Text-to-Speech</h3>
+                        <ul className="space-y-1.5">
+                            {Object.entries(voiceHealth?.tts || {}).length === 0 && (
+                                <li className="text-xs text-gray-400">No TTS providers registered</li>
+                            )}
+                            {Object.entries(voiceHealth?.tts || {}).map(([name, ok]) => (
+                                <li key={name} className="flex items-center gap-2 text-sm">
+                                    {ok ? (
+                                        <CheckCircle2 className="w-4 h-4 text-green-500" />
+                                    ) : (
+                                        <XCircle className="w-4 h-4 text-gray-400" />
+                                    )}
+                                    <code className="text-xs">{name}</code>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
                 </div>
             </div>
 

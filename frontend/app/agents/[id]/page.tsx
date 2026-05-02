@@ -20,6 +20,7 @@ import {
     ChevronRight,
     CheckSquare,
     Square as SquareIcon,
+    Mic,
 } from "lucide-react";
 import {
     agentsApi,
@@ -27,6 +28,7 @@ import {
     llmsApi,
     foldersApi,
     purposesApi,
+    voiceApi,
     type Agent,
     type ToolInfo,
     type OllamaModel,
@@ -36,6 +38,7 @@ import {
     type GroqModel,
     type Folder,
     type LLMPurpose,
+    type VoiceCatalog,
 } from "@/lib/api";
 import { ProviderModelSelect } from "@/components/ProviderModelSelect";
 import { SkillsSection } from "@/components/SkillsSection";
@@ -265,6 +268,15 @@ export default function AgentDetailPage() {
     const [autoApproveBelow, setAutoApproveBelow] = useState<string>("");
     const [maxToolCallsPerRun, setMaxToolCallsPerRun] = useState(0);
     const [maxTokensPerDay, setMaxTokensPerDay] = useState(0);
+    // Voice
+    const [voiceEnabled, setVoiceEnabled] = useState(false);
+    const [voiceId, setVoiceId] = useState("");
+    const [voiceProviderTts, setVoiceProviderTts] = useState("");
+    const [voiceProviderStt, setVoiceProviderStt] = useState("");
+    const [voiceSpeed, setVoiceSpeed] = useState(1.0);
+    const [telegramVoiceEnabled, setTelegramVoiceEnabled] = useState(false);
+    const [webVoiceEnabled, setWebVoiceEnabled] = useState(false);
+    const [voiceCatalog, setVoiceCatalog] = useState<VoiceCatalog | null>(null);
 
     useEffect(() => {
         async function load() {
@@ -304,6 +316,15 @@ export default function AgentDetailPage() {
                 setAutoApproveBelow(agentData.auto_approve_below || "");
                 setMaxToolCallsPerRun(agentData.max_tool_calls_per_run || 0);
                 setMaxTokensPerDay(agentData.max_tokens_per_day || 0);
+                setVoiceEnabled(agentData.voice_enabled || false);
+                setVoiceId(agentData.voice_id || "");
+                setVoiceProviderTts(agentData.voice_provider_tts || "");
+                setVoiceProviderStt(agentData.voice_provider_stt || "");
+                setVoiceSpeed(agentData.voice_speed || 1.0);
+                setTelegramVoiceEnabled(agentData.telegram_voice_enabled || false);
+                setWebVoiceEnabled(agentData.web_voice_enabled || false);
+                // Voice catalog is loaded lazily on first expand of the voice section
+                voiceApi.catalog().then(setVoiceCatalog).catch(() => {});
             } catch (err) {
                 console.error("Failed to load agent:", err);
             } finally {
@@ -427,6 +448,13 @@ export default function AgentDetailPage() {
                 auto_approve_below: autoApproveBelow || null,
                 max_tool_calls_per_run: maxToolCallsPerRun,
                 max_tokens_per_day: maxTokensPerDay,
+                voice_enabled: voiceEnabled,
+                voice_id: voiceId || null,
+                voice_provider_tts: voiceProviderTts || null,
+                voice_provider_stt: voiceProviderStt || null,
+                voice_speed: voiceSpeed,
+                telegram_voice_enabled: telegramVoiceEnabled,
+                web_voice_enabled: webVoiceEnabled,
             });
             // Reload agent data
             const updated = await agentsApi.get(agentId);
@@ -728,6 +756,132 @@ export default function AgentDetailPage() {
                             </div>
                         )}
                     </div>
+                </div>
+
+                {/* Voice */}
+                <div className="glass-card p-6 space-y-4">
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <Mic className="w-5 h-5 text-rose-500" /> Voice
+                    </h2>
+                    <p className="text-xs text-gray-500">
+                        When enabled, the agent will reply with synthesised audio on the channels you opt in below.
+                        Inbound voice messages are always transcribed regardless of this setting.
+                    </p>
+                    <label className="flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all duration-200 bg-surface-1 dark:bg-surface-dark2 border-gray-200 dark:border-gray-700">
+                        <input
+                            type="checkbox"
+                            checked={voiceEnabled}
+                            onChange={(e) => setVoiceEnabled(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-300 text-stone-600 focus:ring-stone-600"
+                        />
+                        <div>
+                            <p className="text-sm font-medium text-gray-900 dark:text-white">Enable voice replies</p>
+                            <p className="text-xs text-gray-500">Master toggle for synthesised voice output</p>
+                        </div>
+                    </label>
+
+                    {voiceEnabled && (
+                        <div className="space-y-4 animate-slide-up">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                        TTS Provider
+                                    </label>
+                                    <select
+                                        value={voiceProviderTts}
+                                        onChange={(e) => {
+                                            setVoiceProviderTts(e.target.value);
+                                            setVoiceId("");
+                                        }}
+                                        className="input"
+                                    >
+                                        <option value="">Default ({voiceCatalog?.defaults.tts_provider || "kokoro_local"})</option>
+                                        {voiceCatalog?.providers.tts.map((p) => (
+                                            <option key={p} value={p}>{p}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Voice
+                                    </label>
+                                    <select
+                                        value={voiceId}
+                                        onChange={(e) => setVoiceId(e.target.value)}
+                                        className="input"
+                                    >
+                                        <option value="">Default ({voiceCatalog?.defaults.voice_id || "af_bella"})</option>
+                                        {(() => {
+                                            const provider = voiceProviderTts || voiceCatalog?.defaults.tts_provider || "kokoro_local";
+                                            const list = voiceCatalog?.voices[provider] || [];
+                                            return list.map((v) => (
+                                                <option key={v.id} value={v.id}>{v.name}</option>
+                                            ));
+                                        })()}
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                        STT Provider
+                                    </label>
+                                    <select
+                                        value={voiceProviderStt}
+                                        onChange={(e) => setVoiceProviderStt(e.target.value)}
+                                        className="input"
+                                    >
+                                        <option value="">Default ({voiceCatalog?.defaults.stt_provider || "whisper_local"})</option>
+                                        {voiceCatalog?.providers.stt.map((p) => (
+                                            <option key={p} value={p}>{p}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                        Speed: {voiceSpeed.toFixed(2)}x
+                                    </label>
+                                    <input
+                                        type="range"
+                                        min={0.5}
+                                        max={2.0}
+                                        step={0.05}
+                                        value={voiceSpeed}
+                                        onChange={(e) => setVoiceSpeed(parseFloat(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <label className="flex items-center gap-3 p-3 rounded-xl border cursor-pointer bg-surface-1 dark:bg-surface-dark2 border-gray-200 dark:border-gray-700">
+                                    <input
+                                        type="checkbox"
+                                        checked={telegramVoiceEnabled}
+                                        onChange={(e) => setTelegramVoiceEnabled(e.target.checked)}
+                                        className="w-4 h-4 rounded border-gray-300 text-stone-600 focus:ring-stone-600"
+                                    />
+                                    <div>
+                                        <p className="text-sm font-medium text-gray-900 dark:text-white">Voice on Telegram</p>
+                                        <p className="text-xs text-gray-500">Send a voice note alongside text replies</p>
+                                    </div>
+                                </label>
+                                <label className="flex items-center gap-3 p-3 rounded-xl border cursor-pointer bg-surface-1 dark:bg-surface-dark2 border-gray-200 dark:border-gray-700">
+                                    <input
+                                        type="checkbox"
+                                        checked={webVoiceEnabled}
+                                        onChange={(e) => setWebVoiceEnabled(e.target.checked)}
+                                        className="w-4 h-4 rounded border-gray-300 text-stone-600 focus:ring-stone-600"
+                                    />
+                                    <div>
+                                        <p className="text-sm font-medium text-gray-900 dark:text-white">Voice on Web Chat</p>
+                                        <p className="text-xs text-gray-500">Speak responses in the /chat voice mode</p>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Autonomy Controls */}

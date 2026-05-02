@@ -36,8 +36,34 @@ export interface Agent {
     auto_approve_below: string | null;
     max_tool_calls_per_run: number;
     max_tokens_per_day: number;
+    // Voice
+    voice_enabled: boolean;
+    voice_id: string | null;
+    voice_provider_tts: string | null;
+    voice_provider_stt: string | null;
+    voice_speed: number;
+    telegram_voice_enabled: boolean;
+    web_voice_enabled: boolean;
     created_at: string;
     updated_at: string;
+}
+
+// ─── Voice ───────────────────────────────────────────────────────────────────
+
+export interface VoiceOption {
+    id: string;
+    name: string;
+    lang: string;
+}
+
+export interface VoiceCatalog {
+    providers: { stt: string[]; tts: string[] };
+    defaults: {
+        tts_provider: string;
+        stt_provider: string;
+        voice_id: string;
+    };
+    voices: Record<string, VoiceOption[]>;
 }
 
 // ─── Rate Limit Types ────────────────────────────────────────────────────────
@@ -291,6 +317,43 @@ export const agentsApi = {
         apiFetch<{ status: string }>(`/api/agents/${id}/restart`, { method: "POST" }),
     clone: (id: string) =>
         apiFetch<Agent>(`/api/agents/${id}/clone`, { method: "POST" }),
+};
+
+// ─── Voice ──────────────────────────────────────────────────────────────────
+
+export const voiceApi = {
+    catalog: () => apiFetch<VoiceCatalog>("/api/voice/voices"),
+    health: () =>
+        apiFetch<{ stt: Record<string, boolean>; tts: Record<string, boolean> }>(
+            "/api/voice/health",
+        ),
+    transcribe: async (file: Blob, language = "en", provider?: string) => {
+        const form = new FormData();
+        form.append("file", file, "audio.webm");
+        form.append("language", language);
+        if (provider) form.append("provider", provider);
+        const res = await fetch(`${API_BASE}/api/voice/transcribe`, {
+            method: "POST",
+            body: form,
+            credentials: "include",
+        });
+        if (!res.ok) throw new Error(`transcribe failed: ${res.status}`);
+        return res.json() as Promise<{ text: string; provider: string; language: string | null }>;
+    },
+    synthesizeUrl: (text: string, voice?: string, speed = 1.0, provider?: string) => {
+        // Returns a Blob URL the caller can drop into <audio>
+        return fetch(`${API_BASE}/api/voice/synthesize`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ text, voice, speed, provider, format: "mp3" }),
+        })
+            .then(async (res) => {
+                if (!res.ok) throw new Error(`synthesize failed: ${res.status}`);
+                const blob = await res.blob();
+                return URL.createObjectURL(blob);
+            });
+    },
 };
 
 // ─── Folders ────────────────────────────────────────────────────────────────

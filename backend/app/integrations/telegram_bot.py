@@ -714,6 +714,185 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="⚠️ An error occurred while processing your request."
         )
 
+async def _get_agent_voice_settings(agent_id: str) -> dict | None:
+    """Load voice config for the agent. None if agent missing."""
+    from app.models.agent import Agent
+    async with async_session_factory() as db:
+        agent = await db.get(Agent, agent_id)
+        if not agent:
+            return None
+        return {
+            "voice_enabled": bool(agent.voice_enabled),
+            "voice_id": agent.voice_id,
+            "voice_provider_tts": agent.voice_provider_tts,
+            "voice_provider_stt": agent.voice_provider_stt,
+            "voice_speed": float(agent.voice_speed or 1.0),
+            "telegram_voice_enabled": bool(agent.telegram_voice_enabled),
+        }
+
+
+async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inbound Telegram voice/audio messages.
+
+    1. Download the .oga blob.
+    2. Transcribe via the STT service (whisper.cpp local → cloud fallback).
+    3. Echo a summarised transcript so the user can confirm we heard it right (D7).
+    4. Route the transcript through the normal orchestrator pipeline.
+    5. Reply with text (D2). If the agent has telegram_voice_enabled, also
+       send a voice note synthesised by the TTS service.
+    """
+    if not update.message:
+        return
+    voice_msg = update.message.voice or update.message.audio
+    if not voice_msg:
+        return
+
+    # Reject overlong audio so transcription doesn't burn forever
+    if voice_msg.duration and voice_msg.duration > settings.voice_max_audio_seconds:
+        await update.message.reply_text(
+            f"⚠️ Audio too long \\({voice_msg.duration}s\\)\\. Max is "
+            f"{settings.voice_max_audio_seconds}s\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    chat_id = str(update.effective_chat.id)
+
+    # Resolve agent — same precedence as message_handler
+    agent_id, agent_name = None, None
+    if context.chat_data and context.chat_data.get("active_agent_id"):
+        switched_id = context.chat_data["active_agent_id"]
+        switched_name = context.chat_data.get("active_agent_name", "Agent")
+        if agent_manager.is_running(switched_id):
+            agent_id, agent_name = switched_id, switched_name
+    if not agent_id:
+        agent_id, agent_name = await _find_agent_by_chat_id(chat_id)
+    if not agent_id:
+        agent_id, agent_name = _get_default_agent()
+    if not agent_id:
+        await update.message.reply_text(
+            "❌ No agents are currently running\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    # Acknowledge so the user sees activity while we transcribe
+    ack = await update.message.reply_text(
+        "🎤 Transcribing\\.\\.\\.", parse_mode="MarkdownV2"
+    )
+
+    # Download the audio blob
+    try:
+        tg_file = await voice_msg.get_file()
+        audio_bytes = bytes(await tg_file.download_as_bytearray())
+    except Exception as e:
+        logger.error("Telegram voice download failed: %s", e)
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack.message_id,
+            text="⚠️ Failed to download voice message\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    # Pull agent voice config (for STT override and downstream TTS reply)
+    voice_cfg = await _get_agent_voice_settings(agent_id) or {}
+
+    # Transcribe
+    from app.core.stt_service import STTError, transcribe as stt_transcribe
+    try:
+        result = await stt_transcribe(
+            audio=audio_bytes,
+            mime=voice_msg.mime_type or "audio/ogg",
+            language="en",
+            provider_override=voice_cfg.get("voice_provider_stt"),
+        )
+        transcript = result.text
+    except STTError as e:
+        logger.error("Telegram STT failed: %s", e)
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack.message_id,
+            text="⚠️ Sorry, I couldn't transcribe that\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    if not transcript:
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack.message_id,
+            text="⚠️ Empty transcript — try again\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    # Echo the (truncated) transcript so the user can confirm
+    summary = transcript
+    cap = settings.voice_telegram_summary_chars
+    if len(summary) > cap:
+        summary = summary[: cap - 1].rstrip() + "…"
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=ack.message_id,
+        text=f"🎤 _{escape_markdown(summary)}_",
+        parse_mode="MarkdownV2",
+    )
+
+    # Route to agent (same pipeline as text)
+    safe_name = escape_markdown(agent_name)
+    think_msg = await update.message.reply_text(
+        f"🤖 *{safe_name}* is thinking\\.\\.\\.", parse_mode="MarkdownV2"
+    )
+    project_id = context.chat_data.get("project_id") if context.chat_data else None
+    try:
+        response = await _route_with_history(
+            agent_id, agent_name, transcript, chat_id, project_id=project_id
+        )
+        reply_text = response["output"]
+    except Exception as e:
+        logger.error("Telegram voice route error: %s", e)
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=think_msg.message_id,
+            text="⚠️ An error occurred while processing your request\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    # Always send the text reply (D2)
+    safe_response = escape_markdown(reply_text)
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=think_msg.message_id,
+        text=f"🤖 *{safe_name}*:\n\n{safe_response}",
+        parse_mode="MarkdownV2",
+    )
+
+    # If voice replies are enabled for this agent + channel, synthesise + send
+    if voice_cfg.get("voice_enabled") and voice_cfg.get("telegram_voice_enabled"):
+        from app.core.tts_service import TTSError, synthesize as tts_synth
+        try:
+            speech = await tts_synth(
+                text=reply_text,
+                voice=voice_cfg.get("voice_id"),
+                speed=voice_cfg.get("voice_speed", 1.0),
+                provider_override=voice_cfg.get("voice_provider_tts"),
+                output_format="mp3",
+            )
+            # Telegram's send_voice expects opus/ogg; send_audio handles mp3 cleanly.
+            await context.bot.send_audio(
+                chat_id=update.effective_chat.id,
+                audio=speech.audio,
+                title=agent_name,
+                performer=agent_name,
+            )
+        except TTSError as e:
+            logger.warning("TTS failed for telegram reply: %s", e)
+        except Exception as e:
+            logger.warning("send_audio failed: %s", e)
+
+
 async def forge_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /forge <description> — starts a new forge request."""
     if not context.args:
@@ -1474,6 +1653,7 @@ async def start_telegram_bot():
         _application.add_handler(forge_conv_handler)
         _application.add_handler(CallbackQueryHandler(approval_callback_handler, pattern=r"^approval_"))
         _application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message_handler))
+        _application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_message_handler))
 
         # Initializing the application
         await _application.initialize()

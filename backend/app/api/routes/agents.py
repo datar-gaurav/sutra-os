@@ -171,6 +171,13 @@ async def create_agent(
         auto_approve_below=payload.auto_approve_below,
         max_tool_calls_per_run=payload.max_tool_calls_per_run,
         max_tokens_per_day=payload.max_tokens_per_day,
+        voice_enabled=payload.voice_enabled,
+        voice_id=payload.voice_id,
+        voice_provider_tts=payload.voice_provider_tts,
+        voice_provider_stt=payload.voice_provider_stt,
+        voice_speed=payload.voice_speed,
+        telegram_voice_enabled=payload.telegram_voice_enabled,
+        web_voice_enabled=payload.web_voice_enabled,
     )
     db.add(agent)
     await db.flush()

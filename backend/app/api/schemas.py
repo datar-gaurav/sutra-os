@@ -208,6 +208,14 @@ class AgentCreate(BaseModel):
     auto_approve_below: str | None = None  # null | "low" | "medium"
     max_tool_calls_per_run: int = 0  # 0 = unlimited
     max_tokens_per_day: int = 0  # 0 = unlimited
+    # Voice
+    voice_enabled: bool = False
+    voice_id: str | None = None
+    voice_provider_tts: str | None = None
+    voice_provider_stt: str | None = None
+    voice_speed: float = Field(1.0, ge=0.5, le=2.0)
+    telegram_voice_enabled: bool = False
+    web_voice_enabled: bool = False
 
     @field_validator("system_prompt")
     @classmethod
@@ -261,6 +269,14 @@ class AgentUpdate(BaseModel):
     auto_approve_below: str | None = None
     max_tool_calls_per_run: int | None = None
     max_tokens_per_day: int | None = None
+    # Voice
+    voice_enabled: bool | None = None
+    voice_id: str | None = None
+    voice_provider_tts: str | None = None
+    voice_provider_stt: str | None = None
+    voice_speed: float | None = Field(None, ge=0.5, le=2.0)
+    telegram_voice_enabled: bool | None = None
+    web_voice_enabled: bool | None = None
 
 
 class AgentResponse(BaseModel):
@@ -299,6 +315,14 @@ class AgentResponse(BaseModel):
     auto_approve_below: str | None = None
     max_tool_calls_per_run: int = 0
     max_tokens_per_day: int = 0
+    # Voice
+    voice_enabled: bool = False
+    voice_id: str | None = None
+    voice_provider_tts: str | None = None
+    voice_provider_stt: str | None = None
+    voice_speed: float = 1.0
+    telegram_voice_enabled: bool = False
+    web_voice_enabled: bool = False
     created_at: datetime
     updated_at: datetime
 
