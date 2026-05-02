@@ -8,7 +8,7 @@ import {
     Menu, CalendarClock, Blocks, Brain, ScrollText, LogOut, KanbanSquare,
     MessagesSquare, ShieldCheck, Network, Target, DollarSign, BookOpen,
     Package, Mail, Webhook, BarChart3, ChevronDown, ChevronRight, Pencil, Sparkles, Link2, Hammer, TrendingUp,
-    ExternalLink, HardDrive, Layers, Dna, Bell, FolderKanban, Gauge, ArrowUp, ArrowDown, Briefcase,
+    ExternalLink, HardDrive, Layers, Dna, Bell, FolderKanban, Gauge, ArrowUp, ArrowDown, Briefcase, Gavel,
 } from "lucide-react";
 import { authStorage } from "@/lib/auth";
 import { authApi, approvalsApi, alertsApi } from "@/lib/api";
@@ -84,6 +84,7 @@ const NAV_GROUPS: NavGroup[] = [
             { href: "/goals", label: "Goals", icon: Target },
             { href: "/tasks", label: "Tasks", icon: KanbanSquare },
             { href: "/discussions", label: "Discussions", icon: MessagesSquare },
+            { href: "/councils", label: "Council", icon: Gavel },
             { href: "/approvals", label: "Approvals", icon: ShieldCheck },
         ],
     },

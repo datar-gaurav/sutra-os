@@ -4,6 +4,7 @@ from datetime import datetime
 
 from pydantic import AnyHttpUrl, BaseModel, EmailStr, Field, field_validator
 
+from app.models.council import CouncilDebateMode, CouncilStatus
 from app.models.discussion import DiscussionStatus, DiscussionType
 from app.models.memory import MemoryType
 from app.models.project import ProjectStatus
@@ -855,6 +856,65 @@ class DiscussionResponse(BaseModel):
     task_id: str | None
     created_by_user_id: str | None
     created_by_agent_id: str | None
+    concluded_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ─── Council Schemas ──────────────────────────────────────────────────────────
+
+class CouncilContext(BaseModel):
+    background: str | None = None
+    constraints: str | None = None
+    non_negotiables: str | None = None
+    success_criteria: str | None = None
+
+
+class CouncilCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    question: str = Field(..., min_length=5)
+    context: CouncilContext | None = None
+    advisor_agent_ids: list[str] = Field(..., min_length=2)
+    arbitrator_agent_id: str
+    debate_mode: CouncilDebateMode = CouncilDebateMode.model_native
+    role_assignments: dict[str, str] | None = None
+    num_rounds: int = Field(3, ge=1, le=5)
+
+    @field_validator("arbitrator_agent_id")
+    @classmethod
+    def arbitrator_distinct(cls, v, info):
+        advisors = info.data.get("advisor_agent_ids") or []
+        if v in advisors:
+            raise ValueError("arbitrator_agent_id must not be one of advisor_agent_ids")
+        return v
+
+    @field_validator("role_assignments")
+    @classmethod
+    def roles_match_mode(cls, v, info):
+        mode = info.data.get("debate_mode")
+        advisors = info.data.get("advisor_agent_ids") or []
+        if mode == CouncilDebateMode.role_based:
+            if not v or any(a not in v or not v[a].strip() for a in advisors):
+                raise ValueError("role_assignments must cover every advisor in role_based mode")
+        return v
+
+
+class CouncilResponse(BaseModel):
+    id: str
+    title: str
+    question: str
+    context: dict
+    advisor_agent_ids: list
+    arbitrator_agent_id: str
+    debate_mode: str
+    role_assignments: dict
+    num_rounds: int
+    status: str
+    messages: list
+    final_report: str | None
+    created_by_user_id: str | None
     concluded_at: datetime | None
     created_at: datetime
     updated_at: datetime

@@ -774,6 +774,73 @@ export const discussionsApi = {
         apiFetch<Discussion>(`/api/discussions/${id}/message`, { method: "POST", body: JSON.stringify({ content }) }),
 };
 
+// ─── Council Types & API ─────────────────────────────────────────────────────
+
+export type CouncilDebateMode = "role_based" | "model_native";
+export type CouncilStatus = "pending" | "active" | "concluded" | "failed";
+
+export interface CouncilContext {
+    background?: string | null;
+    constraints?: string | null;
+    non_negotiables?: string | null;
+    success_criteria?: string | null;
+}
+
+export interface CouncilMessage {
+    agent_id: string;
+    agent_name: string;
+    role: string;
+    content: string;
+    round: number;
+    phase: string;
+    timestamp: string;
+}
+
+export interface Council {
+    id: string;
+    title: string;
+    question: string;
+    context: CouncilContext;
+    advisor_agent_ids: string[];
+    arbitrator_agent_id: string;
+    debate_mode: CouncilDebateMode;
+    role_assignments: Record<string, string>;
+    num_rounds: number;
+    status: CouncilStatus;
+    messages: CouncilMessage[];
+    final_report: string | null;
+    created_by_user_id: string | null;
+    concluded_at: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface CouncilCreatePayload {
+    title: string;
+    question: string;
+    context?: CouncilContext;
+    advisor_agent_ids: string[];
+    arbitrator_agent_id: string;
+    debate_mode: CouncilDebateMode;
+    role_assignments?: Record<string, string>;
+    num_rounds: number;
+}
+
+export const councilsApi = {
+    list: (params?: { status?: string }) => {
+        const q = new URLSearchParams();
+        if (params?.status) q.set("status", params.status);
+        return apiFetch<Council[]>(`/api/councils/?${q}`);
+    },
+    get: (id: string) => apiFetch<Council>(`/api/councils/${id}`),
+    create: (data: CouncilCreatePayload) =>
+        apiFetch<Council>("/api/councils/", { method: "POST", body: JSON.stringify(data) }),
+    delete: (id: string) =>
+        apiFetch<void>(`/api/councils/${id}`, { method: "DELETE" }),
+    reset: (id: string) =>
+        apiFetch<Council>(`/api/councils/${id}/reset`, { method: "POST" }),
+};
+
 // ─── Task & Project Types ────────────────────────────────────────────────────
 
 export type TaskStatus = "backlog" | "todo" | "in_progress" | "review" | "done";
