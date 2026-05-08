@@ -33,6 +33,7 @@ from app.api.routes import env_vars as env_vars_routes
 from app.api.routes import rate_limits as rate_limits_routes
 from app.api.routes import purposes as purposes_routes
 from app.api.routes import job_applications as job_applications_routes
+from app.api.routes import job_discovery as job_discovery_routes
 from app.api.routes import voice as voice_routes
 from app.api.websocket import websocket_endpoint
 from app.config import settings
@@ -84,6 +85,10 @@ import app.models.rate_limit  # ensure ModelRateLimit table is registered  # noq
 import app.models.llm_purpose  # ensure LLMPurpose table is registered  # noqa: F401
 import app.models.error_log  # ensure ErrorLog table is registered  # noqa: F401
 import app.models.job_application  # ensure JobApplication table is registered  # noqa: F401
+import app.models.job_search_config  # ensure JobSearchConfig table is registered  # noqa: F401
+import app.models.job_posting  # ensure JobPosting table is registered  # noqa: F401
+import app.models.company_board  # ensure CompanyBoard table is registered  # noqa: F401
+import app.models.h1b_sponsor  # ensure H1bSponsor / H1bNameOverride tables are registered  # noqa: F401
 from app.core.scheduler import start_scheduler, scheduler
 
 configure_logging(debug=settings.debug)
@@ -952,6 +957,7 @@ app.include_router(rate_limits_routes.router, prefix="/api", dependencies=_auth_
 app.include_router(purposes_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(job_applications_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(job_applications_routes.public_router, prefix="/api/public")
+app.include_router(job_discovery_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(voice_routes.router, prefix="/api", dependencies=_auth_dep)
 # Public webhook endpoint — token-protected, no JWT required
 from app.api.routes.triggers import public_router as triggers_public_router

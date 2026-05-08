@@ -489,6 +489,69 @@ async def execute_trigger(trigger_id: str):
     await fire_trigger(trigger_id)
 
 
+# ─── Job Discovery ────────────────────────────────────────────────────────────
+
+async def execute_job_search(config_id: str):
+    """Run one job-discovery config end-to-end."""
+    try:
+        from app.core.job_discovery.service import run_job_search
+        summary = await run_job_search(config_id)
+        print(f"[Scheduler] Job discovery {config_id}: {summary}")
+    except Exception as e:
+        print(f"[Scheduler] Job discovery {config_id} failed: {e}")
+
+
+async def sync_job_search_configs():
+    """Load active JobSearchConfig rows and (re)register their cron jobs."""
+    from app.models.job_search_config import JobSearchConfig
+
+    async with async_session_factory() as db:
+        # Clear existing jobsearch_* triggers so renames/reschedules take effect.
+        for p_job in scheduler.get_jobs():
+            if p_job.id.startswith("jobsearch_"):
+                scheduler.remove_job(p_job.id)
+
+        result = await db.execute(
+            select(JobSearchConfig).where(JobSearchConfig.is_active == True)  # noqa: E712
+        )
+        configs = result.scalars().all()
+
+        for cfg in configs:
+            try:
+                parts = (cfg.schedule_cron or "").split()
+                if len(parts) != 5:
+                    print(f"[Scheduler] Skipping job-search config {cfg.id}: bad cron {cfg.schedule_cron!r}")
+                    continue
+                tz = pytz.timezone(cfg.timezone or "America/Los_Angeles")
+                scheduler.add_job(
+                    execute_job_search,
+                    trigger=CronTrigger(
+                        minute=parts[0],
+                        hour=parts[1],
+                        day=parts[2],
+                        month=parts[3],
+                        day_of_week=parts[4],
+                        timezone=tz,
+                    ),
+                    args=[cfg.id],
+                    id=f"jobsearch_{cfg.id}",
+                    replace_existing=True,
+                )
+            except Exception as e:
+                print(f"[Scheduler] Failed to schedule job-search {cfg.id}: {e}")
+        print(f"[Scheduler] Synced {len(configs)} job-search configs.")
+
+
+async def run_h1b_quarterly_refresh():
+    """Re-load USCIS Employer Data Hub CSVs for the canonical fiscal years."""
+    try:
+        from app.core.job_discovery.h1b_loader import refresh_uscis_default
+        result = await refresh_uscis_default()
+        print(f"[Scheduler] H-1B refresh: {result}")
+    except Exception as e:
+        print(f"[Scheduler] H-1B refresh failed: {e}")
+
+
 async def sync_triggers():
     """Load schedule triggers from DB and sync them into APScheduler."""
     async with async_session_factory() as db:
@@ -831,6 +894,7 @@ def start_scheduler():
             loop.create_task(sync_jobs())
             loop.create_task(sync_batch_jobs())
             loop.create_task(sync_triggers())
+            loop.create_task(sync_job_search_configs())
             scheduler.add_job(
                 expire_pending_approvals,
                 trigger=IntervalTrigger(minutes=5),
@@ -955,6 +1019,23 @@ def start_scheduler():
                     replace_existing=True,
                 )
                 print(f"[Scheduler] Social Pulse refresh scheduled: {settings.social_pulse_cron}")
+
+            # H-1B sponsor data refresh — quarterly cron (UTC)
+            h1b_parts = settings.h1b_refresh_cron.split()
+            if len(h1b_parts) == 5:
+                scheduler.add_job(
+                    run_h1b_quarterly_refresh,
+                    trigger=CronTrigger(
+                        minute=h1b_parts[0],
+                        hour=h1b_parts[1],
+                        day=h1b_parts[2],
+                        month=h1b_parts[3],
+                        day_of_week=h1b_parts[4],
+                    ),
+                    id="h1b_quarterly_refresh",
+                    replace_existing=True,
+                )
+                print(f"[Scheduler] H-1B quarterly refresh scheduled: {settings.h1b_refresh_cron}")
 
             # Forge queue runner — process queued forge requests one-by-one
             # Default: 7:00 PM Pacific every day (FORGE_QUEUE_CRON env var to override)

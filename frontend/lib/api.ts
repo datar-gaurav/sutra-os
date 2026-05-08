@@ -2398,6 +2398,206 @@ export const jobApplicationsApi = {
 };
 
 
+// ─── Job Discovery ───────────────────────────────────────────────────────────
+
+export type JobDiscoverySource =
+    | "greenhouse"
+    | "lever"
+    | "ashby"
+    | "smartrecruiters"
+    | "discovery"
+    | string;
+
+export interface JobSearchConfig {
+    id: string;
+    name: string;
+    title_query: string;
+    keywords: string[];
+    exclude_keywords: string[];
+    location_filter: string | null;
+    lookback_hours: number;
+    schedule_cron: string;
+    timezone: string;
+    sources_enabled: JobDiscoverySource[];
+    max_results_per_run: number;
+    h1b_only: boolean;
+    h1b_min_tier: number;
+    exclude_companies: string[];
+    is_active: boolean;
+    last_run_at: string | null;
+    last_run_status: string | null;
+    last_run_count_new: number;
+    last_run_count_seen: number;
+    last_run_summary: Record<string, unknown> | null;
+    last_run_error: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export type JobPostingStatus = "new" | "seen" | "dismissed" | "applied";
+
+export interface JobPosting {
+    id: string;
+    config_id: string | null;
+    source: JobDiscoverySource;
+    source_company_token: string | null;
+    external_id: string | null;
+    job_title: string;
+    company: string;
+    location: string | null;
+    salary: string | null;
+    remote: boolean | null;
+    job_url: string;
+    description_snippet: string | null;
+    posted_at: string | null;
+    first_seen_at: string;
+    last_seen_at: string;
+    matched_terms: string[];
+    status: JobPostingStatus;
+    sponsor_tier: number | null;
+    sponsor_match_method: string | null;
+    no_sponsorship_signal: boolean;
+    application_id: string | null;
+    created_at: string;
+}
+
+export interface JobDiscoverySourceMeta {
+    name: string;
+    supports_server_search: boolean;
+    needs_board_token: boolean;
+}
+
+export interface CompanyBoard {
+    id: string;
+    company_name: string;
+    source: JobDiscoverySource;
+    board_token: string;
+    is_active: boolean;
+    consecutive_failures: number;
+    last_success_at: string | null;
+    last_failure_reason: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface JobDiscoveryRunSummary {
+    status: string;
+    config_id: string;
+    new?: number;
+    seen?: number;
+    per_source?: Record<string, number>;
+    errors?: Record<string, string>;
+}
+
+export interface H1bStats {
+    total_rows: number;
+    by_fiscal_year: { fiscal_year: number; count: number }[];
+    default_sources: { fiscal_year: number; url: string }[];
+}
+
+export const jobDiscoveryApi = {
+    listConfigs: () => apiFetch<JobSearchConfig[]>(`/api/job-discovery/configs`),
+    createConfig: (data: Partial<JobSearchConfig>) =>
+        apiFetch<JobSearchConfig>(`/api/job-discovery/configs`, {
+            method: "POST",
+            body: JSON.stringify(data),
+        }),
+    updateConfig: (id: string, data: Partial<JobSearchConfig>) =>
+        apiFetch<JobSearchConfig>(`/api/job-discovery/configs/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(data),
+        }),
+    deleteConfig: (id: string) =>
+        apiFetch<{ deleted: boolean }>(`/api/job-discovery/configs/${id}`, { method: "DELETE" }),
+    runConfig: (id: string, inline = false) =>
+        apiFetch<JobDiscoveryRunSummary | { status: string; config_id: string }>(
+            `/api/job-discovery/configs/${id}/run?inline=${inline}`,
+            { method: "POST" },
+        ),
+
+    listPostings: (params?: {
+        config_id?: string;
+        status?: JobPostingStatus;
+        source?: string;
+        since_hours?: number;
+        search?: string;
+        h1b_only?: boolean;
+        h1b_min_tier?: number;
+        limit?: number;
+        offset?: number;
+    }) => {
+        const qs = new URLSearchParams();
+        for (const [k, v] of Object.entries(params || {})) {
+            if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+        }
+        return apiFetch<JobPosting[]>(`/api/job-discovery/postings?${qs.toString()}`);
+    },
+    updatePosting: (id: string, data: { status?: JobPostingStatus }) =>
+        apiFetch<JobPosting>(`/api/job-discovery/postings/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(data),
+        }),
+    applyPosting: (id: string) =>
+        apiFetch<{
+            status: string;
+            posting_id: string;
+            application_id?: string;
+            deduped?: boolean;
+            resume_loop_fired?: boolean;
+        }>(`/api/job-discovery/postings/${id}/apply`, { method: "POST" }),
+
+    listSources: () => apiFetch<JobDiscoverySourceMeta[]>(`/api/job-discovery/sources`),
+    listBoards: () => apiFetch<CompanyBoard[]>(`/api/job-discovery/boards`),
+    createBoard: (data: Omit<CompanyBoard, "id" | "consecutive_failures" | "last_success_at" | "last_failure_reason" | "created_at" | "updated_at">) =>
+        apiFetch<CompanyBoard>(`/api/job-discovery/boards`, {
+            method: "POST",
+            body: JSON.stringify(data),
+        }),
+    updateBoard: (id: string, data: Partial<CompanyBoard>) =>
+        apiFetch<CompanyBoard>(`/api/job-discovery/boards/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(data),
+        }),
+    deleteBoard: (id: string) =>
+        apiFetch<{ deleted: boolean }>(`/api/job-discovery/boards/${id}`, { method: "DELETE" }),
+
+    h1bStats: () => apiFetch<H1bStats>(`/api/job-discovery/h1b/stats`),
+    h1bRefresh: (data?: { url?: string; fiscal_year?: number }) =>
+        apiFetch<{
+            status: string;
+            url?: string;
+            fiscal_year?: number;
+            rows_seen?: number;
+            employers?: number;
+            written?: number;
+            error?: string;
+            headers?: string[];
+            content_type?: string;
+            sources?: { fiscal_year: number; url: string }[];
+        }>(`/api/job-discovery/h1b/refresh`, {
+            method: "POST",
+            body: JSON.stringify(data || {}),
+        }),
+    h1bUpload: (file: File, fiscal_year: number) => {
+        const fd = new FormData();
+        fd.append("fiscal_year", String(fiscal_year));
+        fd.append("file", file);
+        return apiFetch<{
+            status: string;
+            fiscal_year?: number;
+            rows_seen?: number;
+            employers?: number;
+            written?: number;
+            error?: string;
+            headers?: string[];
+        }>(`/api/job-discovery/h1b/upload`, {
+            method: "POST",
+            body: fd,
+        });
+    },
+};
+
+
 // ─── Google Drive ─────────────────────────────────────────────────────────────
 
 export const googleDriveApi = {

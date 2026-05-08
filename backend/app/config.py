@@ -105,6 +105,21 @@ class Settings(BaseSettings):
     social_pulse_cron: str = "*/30 * * * *"  # every 30 min
     social_pulse_default_subreddits: str = "technology,programming,business,marketing,worldnews"
 
+    # ── Job Discovery ──────────────────────────────────────────────────────
+    # Google Programmable Search (Custom Search Engine) — used by the
+    # discovery adapter to broaden search beyond seeded ATS boards. Free
+    # tier is 100 queries/day; we hard-cap per scheduled run below.
+    google_cse_api_key: str = ""
+    google_cse_id: str = ""
+    # Hard cap on CSE queries fired in a single scheduled job run.
+    job_discovery_cse_query_cap: int = 50
+    # Default User-Agent for direct ATS adapters. Source operators block
+    # blank or python-default UAs aggressively.
+    job_discovery_user_agent: str = "SutraOS-JobDiscovery/0.1 (+https://github.com/anthropic/sutra)"
+    # USCIS H-1B Employer Data Hub — refreshed quarterly by APScheduler.
+    # Format: "minute hour day month dow" — 3am UTC on the 1st of every 3rd month.
+    h1b_refresh_cron: str = "0 3 1 */3 *"
+
     # SMTP Notifications
     smtp_host: str = ""
     smtp_port: int = 587
