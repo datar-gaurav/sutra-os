@@ -31,10 +31,7 @@ from app.core.job_discovery.normalize import canonicalize_url, title_matches
 
 logger = logging.getLogger(__name__)
 
-# Site-restricted engines require the /siterestrict path; the regular /v1
-# endpoint returns 403 for those engine types. Using siterestrict also gives
-# 10k free queries/day vs 100 for the unrestricted endpoint.
-CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1/siterestrict"
+CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
 
 # Domains that imply a particular ATS, used to tag the source on the posting
 # we yield. The persister still keys dedup off the canonical URL, so a CSE
