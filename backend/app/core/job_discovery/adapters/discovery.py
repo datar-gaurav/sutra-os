@@ -53,13 +53,10 @@ SITE_TO_SOURCE = {
     "www.linkedin.com": "linkedin",
 }
 
-# site: operators embedded in the query — siteSearch API param only accepts a
-# single URL pattern, so we put the restriction into q itself instead.
-SITE_RESTRICT = (
-    "site:boards.greenhouse.io OR site:lever.co OR "
-    "site:jobs.lever.co OR site:jobs.ashbyhq.com OR "
-    "site:jobs.smartrecruiters.com OR site:linkedin.com/jobs"
-)
+# Site restriction is handled by the CSE engine configuration itself
+# (programmablesearchengine.google.com → Sites to search).
+# Do NOT use site: operators in the query — they conflict with site-restricted
+# engines (returns 403). The engine already scopes results to the job board domains.
 
 
 def _source_for_url(url: str) -> str:
@@ -127,9 +124,9 @@ class CSEDiscoveryAdapter(JobSourceAdapter):
         else:
             date_restrict = "m1"
 
-        # Embed site: operators directly in q — the siteSearch API param only
-        # accepts a single URL, so multi-site restriction must live in the query.
-        q = f'"{query.title_query}" ({SITE_RESTRICT})'
+        # Quote the title so CSE treats it as a phrase. Site restriction comes
+        # from the engine's configured domains, not from query operators.
+        q = f'"{query.title_query}"'
 
         seen_urls: set[str] = set()
         queries_used = 0

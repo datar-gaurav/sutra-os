@@ -57,7 +57,7 @@ class AshbyAdapter(JobSourceAdapter):
         boards = query.targets.get(self.name) or []
         if not boards:
             return
-        cutoff = datetime.now(timezone.utc).timestamp() - query.lookback_hours * 3600
+        # No cutoff — boards return all open postings; dedup_hash prevents re-inserts.
 
         async with make_client() as client:
             for board in boards:
@@ -85,8 +85,6 @@ class AshbyAdapter(JobSourceAdapter):
                     if not matched:
                         continue
                     published = _parse_iso(j.get("publishedDate") or j.get("publishedAt"))
-                    if published and published.timestamp() < cutoff:
-                        continue
 
                     location = (j.get("locationName") or j.get("location") or "").strip() or None
                     apply_url = (j.get("applyUrl") or j.get("jobUrl") or "").strip()

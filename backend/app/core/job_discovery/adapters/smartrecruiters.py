@@ -46,7 +46,7 @@ class SmartRecruitersAdapter(JobSourceAdapter):
         companies = query.targets.get(self.name) or []
         if not companies:
             return
-        cutoff = datetime.now(timezone.utc).timestamp() - query.lookback_hours * 3600
+        # No cutoff — boards return all open postings; dedup_hash prevents re-inserts.
 
         async with make_client() as client:
             for cid in companies:
@@ -77,8 +77,6 @@ class SmartRecruitersAdapter(JobSourceAdapter):
                         continue
 
                     released = _parse_iso(j.get("releasedDate") or j.get("createdOn"))
-                    if released and released.timestamp() < cutoff:
-                        continue
 
                     loc = j.get("location") or {}
                     location_parts = [

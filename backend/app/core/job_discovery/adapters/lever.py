@@ -34,7 +34,7 @@ class LeverAdapter(JobSourceAdapter):
         sites = query.targets.get(self.name) or []
         if not sites:
             return
-        cutoff_ms = (datetime.now(timezone.utc).timestamp() - query.lookback_hours * 3600) * 1000
+        # No cutoff — boards return all open postings; dedup_hash prevents re-inserts.
 
         async with make_client() as client:
             for site in sites:
@@ -58,8 +58,6 @@ class LeverAdapter(JobSourceAdapter):
                         continue
 
                     created = j.get("createdAt")
-                    if isinstance(created, (int, float)) and created < cutoff_ms:
-                        continue
 
                     cats = j.get("categories") or {}
                     location = (cats.get("location") or "").strip() or None

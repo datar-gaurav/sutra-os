@@ -44,7 +44,9 @@ class GreenhouseAdapter(JobSourceAdapter):
         tokens = query.targets.get(self.name) or []
         if not tokens:
             return
-        cutoff = datetime.now(timezone.utc).timestamp() - query.lookback_hours * 3600
+        # No cutoff filter — Greenhouse boards return all open postings for a company.
+        # Dedup in the service (dedup_hash) prevents duplicates on re-runs; filtering
+        # by updated_at would hide postings that haven't been edited recently.
 
         async with make_client() as client:
             for token in tokens:
@@ -68,8 +70,6 @@ class GreenhouseAdapter(JobSourceAdapter):
                     if not matched:
                         continue
                     updated = _parse_updated(j.get("updated_at"))
-                    if updated and updated.timestamp() < cutoff:
-                        continue
 
                     company = (
                         (j.get("company_name") or "").strip()
