@@ -31,7 +31,10 @@ from app.core.job_discovery.normalize import canonicalize_url, title_matches
 
 logger = logging.getLogger(__name__)
 
-CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
+# Site-restricted engines require the /siterestrict path; the regular /v1
+# endpoint returns 403 for those engine types. Using siterestrict also gives
+# 10k free queries/day vs 100 for the unrestricted endpoint.
+CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1/siterestrict"
 
 # Domains that imply a particular ATS, used to tag the source on the posting
 # we yield. The persister still keys dedup off the canonical URL, so a CSE
@@ -50,14 +53,12 @@ SITE_TO_SOURCE = {
     "www.linkedin.com": "linkedin",
 }
 
-# The siteSearch passed to CSE — kept narrow enough that results are
-# almost always real apply pages.
+# site: operators embedded in the query — siteSearch API param only accepts a
+# single URL pattern, so we put the restriction into q itself instead.
 SITE_RESTRICT = (
-    "greenhouse.io OR boards.greenhouse.io OR "
-    "lever.co OR jobs.lever.co OR "
-    "ashbyhq.com OR jobs.ashbyhq.com OR "
-    "smartrecruiters.com OR jobs.smartrecruiters.com OR "
-    "linkedin.com/jobs"
+    "site:boards.greenhouse.io OR site:lever.co OR "
+    "site:jobs.lever.co OR site:jobs.ashbyhq.com OR "
+    "site:jobs.smartrecruiters.com OR site:linkedin.com/jobs"
 )
 
 
@@ -126,8 +127,9 @@ class CSEDiscoveryAdapter(JobSourceAdapter):
         else:
             date_restrict = "m1"
 
-        # Build the search query. Quote the title so CSE treats it as a phrase.
-        q = f'"{query.title_query}"'
+        # Embed site: operators directly in q — the siteSearch API param only
+        # accepts a single URL, so multi-site restriction must live in the query.
+        q = f'"{query.title_query}" ({SITE_RESTRICT})'
 
         seen_urls: set[str] = set()
         queries_used = 0
@@ -141,8 +143,6 @@ class CSEDiscoveryAdapter(JobSourceAdapter):
                     "key": settings.google_cse_api_key,
                     "cx": settings.google_cse_id,
                     "q": q,
-                    "siteSearch": SITE_RESTRICT,
-                    "siteSearchFilter": "i",  # include sites in siteSearch
                     "dateRestrict": date_restrict,
                     "num": 10,
                     "start": start,

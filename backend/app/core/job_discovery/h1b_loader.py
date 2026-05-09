@@ -338,7 +338,7 @@ async def load_uscis_bytes(
                 "raw": None,
                 "loaded_at": loaded_at,
             })
-            if len(batch) >= 5000:
+            if len(batch) >= 3000:
                 await _flush_batch(db, batch)
                 written += len(batch)
                 batch = []
