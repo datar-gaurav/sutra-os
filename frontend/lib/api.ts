@@ -2281,6 +2281,8 @@ export const socialPulseApi = {
         }),
     purge: () =>
         apiFetch<{ deleted: number; message: string }>("/api/social-pulse/purge", { method: "DELETE" }),
+    purgeLowScore: (minScore = 60) =>
+        apiFetch<{ deleted: number; message: string }>(`/api/social-pulse/purge-low-score?min_score=${minScore}`, { method: "DELETE" }),
     status: () =>
         apiFetch<Record<string, { ok: boolean; status?: number; error?: string; fix?: string; note?: string }>>("/api/social-pulse/status"),
     models: () =>

@@ -609,6 +609,17 @@ async def refresh_all_platforms(region: str = "US") -> dict:
         await db.commit()
         stats["fetched"] = len(all_items)
 
+        # Prune low-signal items (virality_score < 60) to keep the DB lean
+        from sqlalchemy import cast, Float, text
+        prune_result = await db.execute(
+            text(
+                "DELETE FROM social_pulses "
+                "WHERE COALESCE(CAST(metrics->>'virality_score' AS FLOAT), 0) < 60"
+            )
+        )
+        await db.commit()
+        stats["pruned"] = prune_result.rowcount
+
     logger.info(f"[SocialPulse] Refresh complete: {stats}")
     return stats
 

@@ -387,6 +387,21 @@ async def purge_all_data(db: AsyncSession = Depends(get_db)):
     return {"deleted": result.rowcount, "message": f"Purged {result.rowcount} trend items"}
 
 
+@router.delete("/purge-low-score", status_code=200)
+async def purge_low_score(min_score: float = 60, db: AsyncSession = Depends(get_db)):
+    """Delete all trend items with virality_score below min_score (default 60)."""
+    from sqlalchemy import text
+    result = await db.execute(
+        text(
+            "DELETE FROM social_pulses "
+            "WHERE COALESCE(CAST(metrics->>'virality_score' AS FLOAT), 0) < :min_score"
+        ),
+        {"min_score": min_score},
+    )
+    await db.commit()
+    return {"deleted": result.rowcount, "message": f"Removed {result.rowcount} items below score {min_score}"}
+
+
 # ── Manual refresh ─────────────────────────────────────────────────────────────
 
 @router.post("/refresh")

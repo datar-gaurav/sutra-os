@@ -103,7 +103,7 @@ async def _upsert_posting(
         "salary": (p.salary or None) and p.salary[:255],
         "remote": p.remote,
         "job_url": canon_url or p.job_url,
-        "description_snippet": (p.description_snippet or None) and p.description_snippet[:2000],
+        "description_snippet": p.description_snippet or None,
         "posted_at": posted_at,
         "first_seen_at": now,
         "last_seen_at": now,
@@ -125,6 +125,9 @@ async def _upsert_posting(
             # Re-tag sponsorship in case the loader has run since first_seen.
             "sponsor_tier": values["sponsor_tier"],
             "sponsor_match_method": values["sponsor_match_method"],
+            # Refresh body so older rows pick up the full description after
+            # the snippet cap was raised (was 2000, now 32000).
+            "description_snippet": values["description_snippet"],
         },
     ).returning(JobPosting.id, JobPosting.first_seen_at)
 

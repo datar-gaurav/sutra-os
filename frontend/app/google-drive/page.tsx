@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
     HardDrive, Plus, RefreshCw, Trash2, CheckCircle, XCircle,
     ExternalLink, Loader2, AlertCircle, FolderOpen, ChevronDown, ChevronUp,
+    RotateCcw,
 } from "lucide-react";
 import { googleDriveApi, Integration } from "@/lib/api";
 
@@ -34,6 +35,12 @@ export default function GoogleDrivePage() {
         try {
             const data = await googleDriveApi.list();
             setConfigs(data);
+            // Auto-test all connections so expired tokens surface immediately
+            data.forEach(cfg => {
+                googleDriveApi.test(cfg.id)
+                    .then(result => setTestResults(prev => ({ ...prev, [cfg.id]: result })))
+                    .catch(() => setTestResults(prev => ({ ...prev, [cfg.id]: { ok: false, detail: "Connection test failed" } })));
+            });
         } catch (e: any) {
             setError(e.message || "Failed to load Google Drive connections");
         } finally {
@@ -42,6 +49,14 @@ export default function GoogleDrivePage() {
     };
 
     useEffect(() => { load(); }, []);
+
+    const isAuthError = (detail: string) =>
+        /invalid_grant|expired|revoked|unauthorized/i.test(detail);
+
+    const handleReconnect = (cfg: Integration) => {
+        // Re-run OAuth — backend upserts the integration so the refresh token is replaced
+        window.location.href = googleDriveApi.connectUrl(cfg.agent_id ?? undefined);
+    };
 
     const handleConnect = () => { window.location.href = googleDriveApi.connectUrl(); };
 
@@ -160,16 +175,26 @@ export default function GoogleDrivePage() {
                                         </p>
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0">
-                                        <button
-                                            onClick={() => handleTest(cfg.id)}
-                                            disabled={testing === cfg.id}
-                                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-stone-600 bg-stone-100 hover:bg-stone-200 rounded-lg transition-colors disabled:opacity-50"
-                                        >
-                                            {testing === cfg.id
-                                                ? <Loader2 className="w-3 h-3 animate-spin" />
-                                                : <RefreshCw className="w-3 h-3" />}
-                                            Test
-                                        </button>
+                                        {testResult && !testResult.ok && isAuthError(testResult.detail) ? (
+                                            <button
+                                                onClick={() => handleReconnect(cfg)}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors"
+                                            >
+                                                <RotateCcw className="w-3 h-3" />
+                                                Reconnect
+                                            </button>
+                                        ) : (
+                                            <button
+                                                onClick={() => handleTest(cfg.id)}
+                                                disabled={testing === cfg.id}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-stone-600 bg-stone-100 hover:bg-stone-200 rounded-lg transition-colors disabled:opacity-50"
+                                            >
+                                                {testing === cfg.id
+                                                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                                                    : <RefreshCw className="w-3 h-3" />}
+                                                Test
+                                            </button>
+                                        )}
                                         <button
                                             onClick={() => handleDisconnect(cfg.id)}
                                             disabled={disconnecting === cfg.id}
@@ -185,11 +210,25 @@ export default function GoogleDrivePage() {
 
                                 {/* Test result */}
                                 {testResult && (
-                                    <div className={`flex items-center gap-2 mx-4 mb-3 px-3 py-2 rounded-lg text-xs ${testResult.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+                                    <div className={`flex items-center gap-2 mx-4 mb-3 px-3 py-2 rounded-lg text-xs ${testResult.ok ? "bg-green-50 text-green-700" : isAuthError(testResult.detail) ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-red-50 text-red-700"}`}>
                                         {testResult.ok
                                             ? <CheckCircle className="w-3.5 h-3.5 shrink-0" />
                                             : <XCircle className="w-3.5 h-3.5 shrink-0" />}
-                                        {testResult.detail}
+                                        <span className="flex-1">
+                                            {testResult.ok
+                                                ? testResult.detail
+                                                : isAuthError(testResult.detail)
+                                                ? "Token expired or revoked — click Reconnect to re-authorize."
+                                                : testResult.detail}
+                                        </span>
+                                        {!testResult.ok && isAuthError(testResult.detail) && (
+                                            <button
+                                                onClick={() => handleReconnect(cfg)}
+                                                className="shrink-0 underline font-medium hover:no-underline"
+                                            >
+                                                Reconnect
+                                            </button>
+                                        )}
                                     </div>
                                 )}
 

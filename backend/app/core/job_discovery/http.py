@@ -78,8 +78,12 @@ async def get_json(
     return None
 
 
-def html_to_snippet(html: str | None, max_chars: int = 2000) -> str | None:
-    """Strip HTML tags and collapse whitespace into a snippet capped at max_chars."""
+def html_to_snippet(html: str | None, max_chars: int = 32000) -> str | None:
+    """Strip HTML tags and collapse whitespace, capped at max_chars.
+
+    Cap is intentionally generous so requirements/qualifications survive — ATS
+    bodies routinely run 4–10k chars. Column type is Text, so storage is free.
+    """
     if not html:
         return None
     import re as _re

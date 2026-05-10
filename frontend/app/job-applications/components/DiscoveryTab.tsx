@@ -30,12 +30,39 @@ function timeAgo(iso: string | null): string {
     return `${Math.floor(hrs / 24)}d ago`;
 }
 
+function htmlToText(raw: string): string {
+    const decoded = raw
+        .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&").replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
+    return decoded
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/p>/gi, "\n").replace(/<\/div>/gi, "\n")
+        .replace(/<\/h[1-6]>/gi, "\n").replace(/<h[1-6][^>]*>/gi, "\n")
+        .replace(/<li[^>]*>/gi, "\n• ").replace(/<\/li>/gi, "")
+        .replace(/<[^>]+>/g, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+}
+
+const SOURCE_COLORS: Record<string, string> = {
+    greenhouse:      "bg-emerald-50 text-emerald-700 border-emerald-200",
+    lever:           "bg-blue-50 text-blue-700 border-blue-200",
+    ashby:           "bg-violet-50 text-violet-700 border-violet-200",
+    smartrecruiters: "bg-amber-50 text-amber-700 border-amber-200",
+    discovery:       "bg-indigo-50 text-indigo-700 border-indigo-200",
+};
+
+function sourceBadgeCls(source: string): string {
+    return SOURCE_COLORS[source] ?? "bg-stone-100 text-stone-700 border-stone-200";
+}
+
 function tierBadge(tier: number | null): { label: string; cls: string } {
-    if (tier == null) return { label: "—", cls: "bg-stone-700/30 text-stone-400 border-stone-700/40" };
-    if (tier === 0) return { label: "no H-1B", cls: "bg-rose-500/10 text-rose-300 border-rose-500/30" };
-    if (tier === 1) return { label: "H-1B 1+", cls: "bg-amber-500/10 text-amber-300 border-amber-500/30" };
-    if (tier === 2) return { label: "H-1B 10+", cls: "bg-blue-500/10 text-blue-300 border-blue-500/30" };
-    return { label: "H-1B 100+", cls: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30" };
+    if (tier == null) return { label: "—", cls: "bg-stone-100 text-stone-500 border-stone-200" };
+    if (tier === 0) return { label: "no H-1B", cls: "bg-rose-50 text-rose-700 border-rose-200" };
+    if (tier === 1) return { label: "H-1B 1+", cls: "bg-amber-50 text-amber-700 border-amber-200" };
+    if (tier === 2) return { label: "H-1B 10+", cls: "bg-blue-50 text-blue-700 border-blue-200" };
+    return { label: "H-1B 100+", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" };
 }
 
 const DEFAULT_NEW_CONFIG: Partial<JobSearchConfig> = {
@@ -113,13 +140,13 @@ function ConfigEditor({
                     )
                 }
                 placeholder={placeholder}
-                className="w-full bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
             />
         </div>
     );
 
     return (
-        <div className="bg-stone-900/60 border border-white/[0.06] rounded-xl p-4 space-y-3">
+        <div className="bg-white border border-stone-200 rounded-xl p-4 space-y-3 shadow-sm">
             <div className="grid grid-cols-2 gap-3">
                 <div>
                     <label className="block text-[11px] uppercase tracking-wider text-stone-500 mb-1">
@@ -128,7 +155,7 @@ function ConfigEditor({
                     <input
                         value={data.name || ""}
                         onChange={(e) => set("name", e.target.value)}
-                        className="w-full bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                     />
                 </div>
                 <div>
@@ -139,7 +166,7 @@ function ConfigEditor({
                         value={data.title_query || ""}
                         onChange={(e) => set("title_query", e.target.value)}
                         placeholder="Product Manager"
-                        className="w-full bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                     />
                 </div>
             </div>
@@ -159,7 +186,7 @@ function ConfigEditor({
                         min={1}
                         value={data.lookback_hours ?? 24}
                         onChange={(e) => set("lookback_hours", Number(e.target.value) || 24)}
-                        className="w-full bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                     />
                 </div>
                 <div>
@@ -169,7 +196,7 @@ function ConfigEditor({
                     <input
                         value={data.schedule_cron || "0 7 * * *"}
                         onChange={(e) => set("schedule_cron", e.target.value)}
-                        className="w-full bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm font-mono focus:border-indigo-500 focus:outline-none"
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm font-mono text-stone-900 focus:border-indigo-500 focus:outline-none"
                     />
                 </div>
                 <div>
@@ -179,7 +206,7 @@ function ConfigEditor({
                     <input
                         value={data.timezone || "America/Los_Angeles"}
                         onChange={(e) => set("timezone", e.target.value)}
-                        className="w-full bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                     />
                 </div>
             </div>
@@ -192,7 +219,7 @@ function ConfigEditor({
                     value={data.location_filter || ""}
                     onChange={(e) => set("location_filter", e.target.value || null)}
                     placeholder="e.g. United States, Remote, NYC"
-                    className="w-full bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                 />
             </div>
 
@@ -209,8 +236,8 @@ function ConfigEditor({
                                 onClick={() => toggleSource(s)}
                                 className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
                                     on
-                                        ? "bg-indigo-500/15 text-indigo-300 border-indigo-500/40"
-                                        : "bg-stone-900 text-stone-400 border-stone-700 hover:border-stone-600"
+                                        ? "bg-indigo-50 text-indigo-700 border-indigo-300"
+                                        : "bg-white text-stone-500 border-stone-200 hover:border-stone-400"
                                 }`}
                             >
                                 {s}
@@ -221,7 +248,7 @@ function ConfigEditor({
             </div>
 
             <div className="grid grid-cols-3 gap-3">
-                <label className="inline-flex items-center gap-2 text-sm text-stone-300">
+                <label className="inline-flex items-center gap-2 text-sm text-stone-700">
                     <input
                         type="checkbox"
                         checked={data.h1b_only ?? true}
@@ -237,7 +264,7 @@ function ConfigEditor({
                     <select
                         value={data.h1b_min_tier ?? 1}
                         onChange={(e) => set("h1b_min_tier", Number(e.target.value))}
-                        className="w-full bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                     >
                         <option value={0}>0 — show all</option>
                         <option value={1}>1+ — any sponsor</option>
@@ -253,15 +280,15 @@ function ConfigEditor({
                         type="number"
                         value={data.max_results_per_run ?? 200}
                         onChange={(e) => set("max_results_per_run", Number(e.target.value) || 200)}
-                        className="w-full bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                     />
                 </div>
             </div>
 
             {csvField("Exclude companies", "exclude_companies", "Cognizant, Infosys")}
 
-            <div className="flex items-center gap-2 pt-2 border-t border-white/[0.06]">
-                <label className="inline-flex items-center gap-2 text-sm text-stone-300 mr-auto">
+            <div className="flex items-center gap-2 pt-2 border-t border-stone-200">
+                <label className="inline-flex items-center gap-2 text-sm text-stone-700 mr-auto">
                     <input
                         type="checkbox"
                         checked={data.is_active ?? true}
@@ -272,14 +299,14 @@ function ConfigEditor({
                 </label>
                 <button
                     onClick={onCancel}
-                    className="px-3 py-1.5 text-sm text-stone-400 hover:text-stone-200"
+                    className="px-3 py-1.5 text-sm text-stone-500 hover:text-stone-700"
                 >
                     Cancel
                 </button>
                 <button
                     onClick={submit}
                     disabled={saving}
-                    className="px-3 py-1.5 text-sm bg-indigo-500/20 text-indigo-200 border border-indigo-500/40 rounded-lg hover:bg-indigo-500/30 disabled:opacity-50"
+                    className="px-3 py-1.5 text-sm bg-indigo-600 text-white border border-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50"
                 >
                     {saving ? "Saving…" : "Save"}
                 </button>
@@ -332,15 +359,15 @@ function BoardsManager({
     };
 
     return (
-        <div className="bg-stone-900/40 border border-white/[0.06] rounded-xl p-4">
+        <div className="bg-white border border-stone-200 rounded-xl p-4 shadow-sm">
             <div className="flex items-center justify-between mb-3">
-                <div className="text-xs uppercase tracking-wider text-stone-400 flex items-center gap-1.5">
+                <div className="text-xs uppercase tracking-wider text-stone-500 flex items-center gap-1.5">
                     <Globe2 size={12} /> Company boards ({boards.length})
                 </div>
                 {!adding && (
                     <button
                         onClick={() => setAdding(true)}
-                        className="text-xs text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1"
+                        className="text-xs text-indigo-600 hover:text-indigo-700 inline-flex items-center gap-1"
                     >
                         <Plus size={12} /> Add board
                     </button>
@@ -353,12 +380,12 @@ function BoardsManager({
                         value={draft.company_name}
                         onChange={(e) => setDraft({ ...draft, company_name: e.target.value })}
                         placeholder="Company name"
-                        className="col-span-4 bg-stone-900 border border-white/[0.06] rounded-md px-2 py-1.5 text-xs"
+                        className="col-span-4 bg-white border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-900"
                     />
                     <select
                         value={draft.source}
                         onChange={(e) => setDraft({ ...draft, source: e.target.value })}
-                        className="col-span-3 bg-stone-900 border border-white/[0.06] rounded-md px-2 py-1.5 text-xs"
+                        className="col-span-3 bg-white border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-900"
                     >
                         {Array.from(PER_BOARD_SOURCES).map((s) => (
                             <option key={s} value={s}>
@@ -370,17 +397,17 @@ function BoardsManager({
                         value={draft.board_token}
                         onChange={(e) => setDraft({ ...draft, board_token: e.target.value })}
                         placeholder="Board token / slug"
-                        className="col-span-3 bg-stone-900 border border-white/[0.06] rounded-md px-2 py-1.5 text-xs"
+                        className="col-span-3 bg-white border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-900"
                     />
                     <button
                         onClick={create}
-                        className="col-span-1 bg-indigo-500/20 text-indigo-200 border border-indigo-500/40 rounded-md px-2 text-xs"
+                        className="col-span-1 bg-indigo-600 text-white border border-indigo-600 rounded-md px-2 text-xs hover:bg-indigo-700"
                     >
                         Add
                     </button>
                     <button
                         onClick={() => setAdding(false)}
-                        className="col-span-1 text-stone-400 text-xs"
+                        className="col-span-1 text-stone-500 text-xs"
                     >
                         Cancel
                     </button>
@@ -391,13 +418,13 @@ function BoardsManager({
                 {boards.map((b) => (
                     <div
                         key={b.id}
-                        className="flex items-center gap-2 text-xs py-1.5 px-2 rounded-md hover:bg-white/[0.03]"
+                        className="flex items-center gap-2 text-xs py-1.5 px-2 rounded-md hover:bg-stone-50"
                     >
-                        <span className="w-40 truncate text-stone-200">{b.company_name}</span>
-                        <span className="w-28 text-stone-400">{b.source}</span>
-                        <span className="flex-1 truncate font-mono text-stone-500">{b.board_token}</span>
+                        <span className="w-40 truncate text-stone-800">{b.company_name}</span>
+                        <span className="w-28 text-stone-500">{b.source}</span>
+                        <span className="flex-1 truncate font-mono text-stone-400">{b.board_token}</span>
                         {b.consecutive_failures > 0 && (
-                            <span className="text-rose-400 inline-flex items-center gap-1">
+                            <span className="text-rose-500 inline-flex items-center gap-1">
                                 <AlertTriangle size={10} />
                                 {b.consecutive_failures}
                             </span>
@@ -406,15 +433,15 @@ function BoardsManager({
                             onClick={() => toggle(b)}
                             className={`px-1.5 py-0.5 rounded text-[10px] border ${
                                 b.is_active
-                                    ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
-                                    : "bg-stone-700/30 text-stone-400 border-stone-700/40"
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                    : "bg-stone-100 text-stone-500 border-stone-200"
                             }`}
                         >
                             {b.is_active ? "active" : "off"}
                         </button>
                         <button
                             onClick={() => remove(b.id)}
-                            className="text-rose-400 hover:text-rose-300"
+                            className="text-rose-500 hover:text-rose-600"
                             title="Remove"
                         >
                             <Trash2 size={12} />
@@ -422,7 +449,7 @@ function BoardsManager({
                     </div>
                 ))}
                 {boards.length === 0 && (
-                    <div className="text-stone-600 text-xs py-3 text-center border border-dashed border-stone-800 rounded">
+                    <div className="text-stone-400 text-xs py-3 text-center border border-dashed border-stone-200 rounded">
                         No boards added — Greenhouse/Lever/Ashby/SmartRecruiters adapters need at least one each.
                     </div>
                 )}
@@ -542,15 +569,15 @@ function H1bPanel() {
     };
 
     return (
-        <div className="bg-stone-900/40 border border-white/[0.06] rounded-xl p-4 space-y-3">
+        <div className="bg-white border border-stone-200 rounded-xl p-4 space-y-3 shadow-sm">
             <div className="flex items-center justify-between">
-                <div className="text-xs uppercase tracking-wider text-stone-400 flex items-center gap-1.5">
+                <div className="text-xs uppercase tracking-wider text-stone-500 flex items-center gap-1.5">
                     <ShieldCheck size={12} /> H-1B sponsor data
                 </div>
                 <button
                     onClick={refreshDefaults}
                     disabled={busy}
-                    className="text-xs text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1 disabled:opacity-50"
+                    className="text-xs text-indigo-600 hover:text-indigo-700 inline-flex items-center gap-1 disabled:opacity-50"
                 >
                     <RefreshCw size={12} className={busy ? "animate-spin" : ""} />
                     Try default URLs
@@ -558,7 +585,7 @@ function H1bPanel() {
             </div>
 
             {stats ? (
-                <div className="text-xs text-stone-300 space-y-1">
+                <div className="text-xs text-stone-700 space-y-1">
                     <div>
                         <span className="text-stone-500">Total rows:</span>{" "}
                         <span className="font-mono">{stats.total_rows.toLocaleString()}</span>
@@ -567,24 +594,24 @@ function H1bPanel() {
                         {stats.by_fiscal_year.map((row) => (
                             <span
                                 key={row.fiscal_year}
-                                className="px-2 py-0.5 rounded border border-white/[0.06] bg-stone-900"
+                                className="px-2 py-0.5 rounded border border-stone-200 bg-stone-50 text-stone-700"
                             >
                                 FY{row.fiscal_year}: {row.count.toLocaleString()}
                             </span>
                         ))}
                     </div>
                     {stats.total_rows === 0 && (
-                        <div className="text-amber-400 text-[11px] mt-1 inline-flex items-center gap-1">
+                        <div className="text-amber-600 text-[11px] mt-1 inline-flex items-center gap-1">
                             <AlertTriangle size={10} />
                             No data loaded yet — use one of the options below.
                         </div>
                     )}
                 </div>
             ) : (
-                <div className="text-stone-500 text-xs">Loading…</div>
+                <div className="text-stone-400 text-xs">Loading…</div>
             )}
 
-            <div className="border-t border-white/[0.06] pt-3 space-y-3">
+            <div className="border-t border-stone-200 pt-3 space-y-3">
                 {/* URL fallback */}
                 <div>
                     <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">
@@ -596,19 +623,19 @@ function H1bPanel() {
                             value={urlInput}
                             onChange={(e) => setUrlInput(e.target.value)}
                             placeholder="https://www.uscis.gov/.../H-1B_…_FY2024.csv"
-                            className="flex-1 bg-stone-900 border border-white/[0.06] rounded-md px-2 py-1.5 text-xs font-mono"
+                            className="flex-1 bg-white border border-stone-200 rounded-md px-2 py-1.5 text-xs font-mono text-stone-900"
                         />
                         <input
                             type="number"
                             value={urlFy}
                             onChange={(e) => setUrlFy(Number(e.target.value) || 2024)}
                             placeholder="FY"
-                            className="w-20 bg-stone-900 border border-white/[0.06] rounded-md px-2 py-1.5 text-xs"
+                            className="w-20 bg-white border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-900"
                         />
                         <button
                             onClick={refreshOneUrl}
                             disabled={busy}
-                            className="bg-indigo-500/20 text-indigo-200 border border-indigo-500/40 rounded-md px-2 py-1.5 text-xs hover:bg-indigo-500/30 disabled:opacity-50"
+                            className="bg-indigo-600 text-white border border-indigo-600 rounded-md px-2 py-1.5 text-xs hover:bg-indigo-700 disabled:opacity-50"
                         >
                             Load
                         </button>
@@ -626,20 +653,20 @@ function H1bPanel() {
                             value={uploadFy}
                             onChange={(e) => setUploadFy(Number(e.target.value) || 2024)}
                             placeholder="FY"
-                            className="w-20 bg-stone-900 border border-white/[0.06] rounded-md px-2 py-1.5 text-xs"
+                            className="w-20 bg-white border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-900"
                         />
                         <input
                             type="file"
                             accept=".csv,.zip"
                             onChange={onUpload}
                             disabled={busy}
-                            className="flex-1 text-xs text-stone-400 file:mr-2 file:py-1 file:px-2 file:rounded file:border file:border-white/[0.06] file:bg-stone-800 file:text-stone-200 file:text-xs hover:file:bg-stone-700"
+                            className="flex-1 text-xs text-stone-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border file:border-stone-200 file:bg-stone-100 file:text-stone-700 file:text-xs hover:file:bg-stone-200"
                         />
                     </div>
                     <div className="text-[10px] text-stone-500 mt-1">
                         Get the .csv from{" "}
                         <a
-                            className="underline text-indigo-400"
+                            className="underline text-indigo-600"
                             target="_blank"
                             rel="noreferrer"
                             href="https://www.uscis.gov/tools/reports-and-studies/h-1b-employer-data-hub"
@@ -651,12 +678,12 @@ function H1bPanel() {
                 </div>
 
                 {lastResult && (
-                    <div className="text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded px-2 py-1.5">
+                    <div className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1.5">
                         {lastResult}
                     </div>
                 )}
                 {lastError && (
-                    <div className="text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded px-2 py-1.5 flex items-start gap-1">
+                    <div className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1.5 flex items-start gap-1">
                         <AlertTriangle size={11} className="mt-0.5 shrink-0" />
                         <span className="break-all">{lastError}</span>
                     </div>
@@ -705,85 +732,82 @@ function PostingDrawer({
     const tier = tierBadge(posting.sponsor_tier);
 
     return (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>
             <div
-                className="w-full max-w-xl bg-stone-950 border-l border-white/[0.06] h-full overflow-y-auto"
+                className="w-full max-w-2xl bg-white border-l border-stone-200 h-full flex flex-col shadow-xl"
                 onClick={(e) => e.stopPropagation()}
             >
-                <div className="sticky top-0 bg-stone-950/95 backdrop-blur-sm border-b border-white/[0.06] p-4 flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
-                        <Briefcase className="w-5 h-5 text-indigo-400 shrink-0" />
-                        <div className="min-w-0">
-                            <h2 className="text-base font-semibold text-white truncate">{posting.job_title}</h2>
-                            <p className="text-xs text-stone-400 truncate">
-                                {posting.company} · {posting.location || "—"}
-                            </p>
-                        </div>
+                {/* ── Sticky header ── */}
+                <div className="shrink-0 border-b border-stone-200 px-5 py-4 flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                        <h2 className="text-base font-semibold text-stone-900 leading-snug">{posting.job_title}</h2>
+                        <p className="text-sm text-stone-500 mt-0.5 truncate">
+                            {posting.company}
+                            {posting.location ? ` · ${posting.location}` : ""}
+                        </p>
                     </div>
                     <button
                         onClick={onClose}
-                        className="p-2 rounded-lg hover:bg-white/[0.06] text-stone-400"
+                        className="shrink-0 p-1.5 rounded-lg hover:bg-stone-100 text-stone-400 mt-0.5"
                     >
                         <X className="w-4 h-4" />
                     </button>
                 </div>
 
-                <div className="p-4 space-y-4">
+                {/* ── Scrollable body ── */}
+                <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+
+                    {/* Badges + apply link */}
                     <div className="flex items-center gap-2 flex-wrap">
-                        <span className="px-2 py-0.5 rounded-md text-[11px] border bg-stone-900/60 border-white/[0.06] text-stone-300">
+                        <span className={`px-2 py-0.5 rounded text-xs font-medium border ${sourceBadgeCls(posting.source)}`}>
                             {posting.source}
                         </span>
-                        <span className={`px-2 py-0.5 rounded-md text-[11px] border ${tier.cls}`}>
+                        <span className={`px-2 py-0.5 rounded text-xs font-medium border ${tier.cls}`}>
                             {tier.label}
                         </span>
-                        {posting.sponsor_match_method && posting.sponsor_match_method !== "none" && (
-                            <span className="px-2 py-0.5 rounded-md text-[10px] border bg-stone-900/60 border-white/[0.06] text-stone-500">
-                                match: {posting.sponsor_match_method}
-                            </span>
-                        )}
                         {posting.no_sponsorship_signal && (
-                            <span className="px-2 py-0.5 rounded-md text-[11px] border bg-amber-500/10 text-amber-300 border-amber-500/30 inline-flex items-center gap-1">
-                                <AlertTriangle size={10} />
-                                JD says no sponsorship
+                            <span className="px-2 py-0.5 rounded text-xs border bg-amber-50 text-amber-700 border-amber-200 inline-flex items-center gap-1">
+                                <AlertTriangle size={10} /> No sponsorship signal
                             </span>
                         )}
                         <a
                             href={posting.job_url}
                             target="_blank"
                             rel="noreferrer"
-                            className="ml-auto inline-flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300"
+                            className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-700"
                         >
                             <ExternalLink size={12} /> Apply page
                         </a>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3 text-xs">
-                        <div className="bg-stone-900/60 border border-white/[0.06] rounded-lg p-3">
-                            <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Posted</div>
-                            <div className="text-stone-200">{timeAgo(posting.posted_at)}</div>
-                        </div>
-                        <div className="bg-stone-900/60 border border-white/[0.06] rounded-lg p-3">
-                            <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">First seen</div>
-                            <div className="text-stone-200">{timeAgo(posting.first_seen_at)}</div>
-                        </div>
+                    {/* Compact meta row */}
+                    <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-stone-500">
+                        <span>Posted <span className="text-stone-700 font-medium">{timeAgo(posting.posted_at)}</span></span>
+                        <span className="text-stone-300">·</span>
+                        <span>First seen <span className="text-stone-700 font-medium">{timeAgo(posting.first_seen_at)}</span></span>
                         {posting.salary && (
-                            <div className="bg-stone-900/60 border border-white/[0.06] rounded-lg p-3 col-span-2">
-                                <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Salary</div>
-                                <div className="text-stone-200">{posting.salary}</div>
-                            </div>
+                            <>
+                                <span className="text-stone-300">·</span>
+                                <span className="text-stone-700 font-medium">{posting.salary}</span>
+                            </>
+                        )}
+                        {posting.sponsor_match_method && posting.sponsor_match_method !== "none" && (
+                            <>
+                                <span className="text-stone-300">·</span>
+                                <span>match: <span className="font-mono">{posting.sponsor_match_method}</span></span>
+                            </>
                         )}
                     </div>
 
+                    {/* Matched terms */}
                     {posting.matched_terms.length > 0 && (
                         <div>
-                            <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">
-                                Matched terms
-                            </div>
+                            <div className="text-[10px] uppercase tracking-wider text-stone-400 mb-1.5">Matched terms</div>
                             <div className="flex flex-wrap gap-1">
                                 {posting.matched_terms.map((t) => (
                                     <span
                                         key={t}
-                                        className="px-1.5 py-0.5 rounded text-[10px] border bg-indigo-500/10 text-indigo-300 border-indigo-500/30"
+                                        className="px-2 py-0.5 rounded text-xs border bg-indigo-50 text-indigo-700 border-indigo-200"
                                     >
                                         {t}
                                     </span>
@@ -792,34 +816,34 @@ function PostingDrawer({
                         </div>
                     )}
 
+                    {/* Description — fills remaining scroll space */}
                     <div>
-                        <div className="text-[10px] uppercase tracking-wider text-stone-500 mb-1">
-                            Description snippet
-                        </div>
-                        <div className="bg-stone-900/60 border border-white/[0.06] rounded-lg p-3 text-xs text-stone-300 whitespace-pre-wrap max-h-72 overflow-y-auto">
-                            {posting.description_snippet || "—"}
+                        <div className="text-[10px] uppercase tracking-wider text-stone-400 mb-2">Description</div>
+                        <div className="text-sm text-stone-700 leading-relaxed whitespace-pre-wrap">
+                            {posting.description_snippet ? htmlToText(posting.description_snippet) : "—"}
                         </div>
                     </div>
+                </div>
 
-                    <div className="flex items-center gap-2 pt-2 border-t border-white/[0.06]">
-                        <button
-                            onClick={dismiss}
-                            className="px-3 py-1.5 text-sm text-stone-400 hover:text-rose-300 border border-stone-700 rounded-lg"
-                        >
-                            Dismiss
-                        </button>
-                        <button
-                            onClick={apply}
-                            disabled={applying || posting.status === "applied"}
-                            className="ml-auto px-3 py-1.5 text-sm bg-indigo-500/20 text-indigo-200 border border-indigo-500/40 rounded-lg hover:bg-indigo-500/30 disabled:opacity-50"
-                        >
-                            {posting.status === "applied"
-                                ? "Already applied"
-                                : applying
-                                ? "Applying…"
-                                : "Apply (build resume)"}
-                        </button>
-                    </div>
+                {/* ── Sticky footer ── */}
+                <div className="shrink-0 border-t border-stone-200 px-5 py-3 flex items-center gap-3 bg-white">
+                    <button
+                        onClick={dismiss}
+                        className="px-4 py-2 text-sm text-stone-600 hover:text-rose-600 border border-stone-200 hover:border-rose-200 rounded-lg transition-colors"
+                    >
+                        Dismiss
+                    </button>
+                    <button
+                        onClick={apply}
+                        disabled={applying || posting.status === "applied"}
+                        className="ml-auto px-5 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                    >
+                        {posting.status === "applied"
+                            ? "Already applied"
+                            : applying
+                            ? "Applying…"
+                            : "Apply (build resume)"}
+                    </button>
                 </div>
             </div>
         </div>
@@ -936,7 +960,7 @@ export default function DiscoveryTab({
                 <select
                     value={activeConfigId}
                     onChange={(e) => setActiveConfigId(e.target.value)}
-                    className="bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    className="bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                 >
                     <option value="">All configs</option>
                     {configs.map((c) => (
@@ -951,20 +975,20 @@ export default function DiscoveryTab({
                         <button
                             onClick={runNow}
                             disabled={running}
-                            className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-500/20 text-indigo-200 border border-indigo-500/40 rounded-lg text-sm hover:bg-indigo-500/30 disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-600 text-white border border-indigo-600 rounded-lg text-sm hover:bg-indigo-700 disabled:opacity-50"
                         >
                             <Play size={14} className={running ? "animate-pulse" : ""} />
                             {running ? "Running…" : "Run now"}
                         </button>
                         <button
                             onClick={() => setEditing(activeConfig)}
-                            className="inline-flex items-center gap-1.5 px-3 py-2 bg-stone-900 border border-white/[0.06] hover:border-white/[0.12] rounded-lg text-sm text-stone-300"
+                            className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-stone-200 hover:border-stone-300 rounded-lg text-sm text-stone-700"
                         >
                             <SettingsIcon size={14} /> Edit
                         </button>
                         <button
                             onClick={() => deleteConfig(activeConfig.id)}
-                            className="inline-flex items-center gap-1.5 px-2 py-2 bg-stone-900 border border-white/[0.06] hover:border-rose-500/40 rounded-lg text-sm text-rose-400"
+                            className="inline-flex items-center gap-1.5 px-2 py-2 bg-white border border-stone-200 hover:border-rose-300 rounded-lg text-sm text-rose-500"
                         >
                             <Trash2 size={14} />
                         </button>
@@ -973,14 +997,14 @@ export default function DiscoveryTab({
 
                 <button
                     onClick={() => setEditing({ ...DEFAULT_NEW_CONFIG })}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-stone-900 border border-white/[0.06] hover:border-white/[0.12] rounded-lg text-sm text-stone-300"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-stone-200 hover:border-stone-300 rounded-lg text-sm text-stone-700"
                 >
                     <Plus size={14} /> New config
                 </button>
 
                 <button
                     onClick={() => setShowSettings((s) => !s)}
-                    className="ml-auto inline-flex items-center gap-1.5 px-3 py-2 bg-stone-900 border border-white/[0.06] hover:border-white/[0.12] rounded-lg text-sm text-stone-300"
+                    className="ml-auto inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-stone-200 hover:border-stone-300 rounded-lg text-sm text-stone-700"
                 >
                     <SettingsIcon size={14} /> {showSettings ? "Hide" : "Boards & H-1B"}
                 </button>
@@ -988,20 +1012,20 @@ export default function DiscoveryTab({
 
             {/* Run summary chip */}
             {activeConfig && (
-                <div className="flex items-center gap-2 flex-wrap text-xs text-stone-400">
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-white/[0.06] bg-stone-900/60">
-                        <Clock size={11} /> Schedule: <span className="font-mono text-stone-300">{activeConfig.schedule_cron}</span>
+                <div className="flex items-center gap-2 flex-wrap text-xs text-stone-500">
+                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-stone-200 bg-stone-50 text-stone-700">
+                        <Clock size={11} /> Schedule: <span className="font-mono">{activeConfig.schedule_cron}</span>
                     </span>
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-white/[0.06] bg-stone-900/60">
-                        <Target size={11} /> Title: <span className="text-stone-300">{activeConfig.title_query}</span>
+                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-stone-200 bg-stone-50 text-stone-700">
+                        <Target size={11} /> Title: <span className="text-stone-900">{activeConfig.title_query}</span>
                     </span>
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-white/[0.06] bg-stone-900/60">
+                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-stone-200 bg-stone-50 text-stone-700">
                         Last run: {activeConfig.last_run_at ? timeAgo(activeConfig.last_run_at) : "never"} —{" "}
-                        <span className="text-emerald-400">{activeConfig.last_run_count_new} new</span> /{" "}
-                        <span className="text-stone-500">{activeConfig.last_run_count_seen} seen</span>
+                        <span className="text-emerald-600">{activeConfig.last_run_count_new} new</span> /{" "}
+                        <span className="text-stone-400">{activeConfig.last_run_count_seen} seen</span>
                     </span>
                     {activeConfig.last_run_error && (
-                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-rose-500/30 bg-rose-500/10 text-rose-300">
+                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-rose-200 bg-rose-50 text-rose-700">
                             <AlertTriangle size={11} /> {activeConfig.last_run_error}
                         </span>
                     )}
@@ -1026,18 +1050,18 @@ export default function DiscoveryTab({
             {/* Filters */}
             <div className="flex items-center gap-2 flex-wrap">
                 <div className="relative flex-1 min-w-[220px] max-w-md">
-                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500" />
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
                     <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder="Search title, company, snippet…"
-                        className="w-full bg-stone-900 border border-white/[0.06] rounded-lg pl-9 pr-3 py-2 text-sm placeholder-stone-500 focus:border-indigo-500 focus:outline-none"
+                        className="w-full bg-white border border-stone-200 rounded-lg pl-9 pr-3 py-2 text-sm placeholder-stone-400 text-stone-900 focus:border-indigo-500 focus:outline-none"
                     />
                 </div>
                 <select
                     value={statusFilter}
                     onChange={(e) => setStatusFilter(e.target.value)}
-                    className="bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    className="bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                 >
                     <option value="">Any status</option>
                     <option value="new">New</option>
@@ -1048,7 +1072,7 @@ export default function DiscoveryTab({
                 <select
                     value={sourceFilter}
                     onChange={(e) => setSourceFilter(e.target.value)}
-                    className="bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    className="bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                 >
                     <option value="">Any source</option>
                     {ALL_SOURCES.map((s) => (
@@ -1060,7 +1084,7 @@ export default function DiscoveryTab({
                 <select
                     value={sinceHours}
                     onChange={(e) => setSinceHours(Number(e.target.value))}
-                    className="bg-stone-900 border border-white/[0.06] rounded-lg px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    className="bg-white border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-900 focus:border-indigo-500 focus:outline-none"
                 >
                     <option value={24}>Last 24h</option>
                     <option value={48}>Last 48h</option>
@@ -1069,16 +1093,16 @@ export default function DiscoveryTab({
                 </select>
                 <button
                     onClick={reloadPostings}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-stone-900 border border-white/[0.06] hover:border-white/[0.12] rounded-lg text-sm text-stone-300"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-stone-200 hover:border-stone-300 rounded-lg text-sm text-stone-700"
                 >
                     <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
                 </button>
             </div>
 
             {/* Postings table */}
-            <div className="bg-stone-900/40 border border-white/[0.06] rounded-xl overflow-hidden">
+            <div className="bg-white border border-stone-200 rounded-xl overflow-hidden shadow-sm">
                 <table className="w-full text-sm">
-                    <thead className="bg-stone-900/80 border-b border-white/[0.06]">
+                    <thead className="bg-stone-50 border-b border-stone-200">
                         <tr className="text-left text-[11px] uppercase tracking-wider text-stone-500">
                             <th className="px-4 py-2.5 font-medium">Title</th>
                             <th className="px-4 py-2.5 font-medium">Company</th>
@@ -1090,37 +1114,37 @@ export default function DiscoveryTab({
                         </tr>
                     </thead>
                     <tbody>
-                        {postings.map((p) => {
+                        {(statusFilter ? postings : postings.filter(p => p.status !== "dismissed")).map((p) => {
                             const tier = tierBadge(p.sponsor_tier);
                             return (
                                 <tr
                                     key={p.id}
                                     onClick={() => setSelected(p)}
-                                    className="border-b border-white/[0.04] hover:bg-white/[0.02] cursor-pointer"
+                                    className="border-b border-stone-100 hover:bg-stone-50 cursor-pointer"
                                 >
-                                    <td className="px-4 py-3 font-medium text-white max-w-[320px] truncate">
+                                    <td className="px-4 py-3 font-medium text-stone-900 max-w-[320px] truncate">
                                         {p.job_title}
                                         {p.no_sponsorship_signal && (
                                             <AlertTriangle
                                                 size={12}
-                                                className="inline ml-1.5 text-amber-400"
+                                                className="inline ml-1.5 text-amber-500"
                                             />
                                         )}
                                     </td>
-                                    <td className="px-4 py-3 text-stone-300 max-w-[220px] truncate">
+                                    <td className="px-4 py-3 text-stone-700 max-w-[220px] truncate">
                                         <span className="inline-flex items-center gap-1.5">
-                                            <Building2 size={11} className="text-stone-500" />
+                                            <Building2 size={11} className="text-stone-400" />
                                             {p.company}
                                         </span>
                                     </td>
-                                    <td className="px-4 py-3 text-stone-400 max-w-[200px] truncate">
+                                    <td className="px-4 py-3 text-stone-500 max-w-[200px] truncate">
                                         <span className="inline-flex items-center gap-1.5">
-                                            <MapPin size={11} className="text-stone-500" />
+                                            <MapPin size={11} className="text-stone-400" />
                                             {p.location || "—"}
                                         </span>
                                     </td>
                                     <td className="px-4 py-3">
-                                        <span className="px-2 py-0.5 rounded text-[10px] border bg-stone-900 border-white/[0.06] text-stone-300">
+                                        <span className={`px-2 py-0.5 rounded text-[10px] border ${sourceBadgeCls(p.source)}`}>
                                             {p.source}
                                         </span>
                                     </td>
@@ -1129,11 +1153,11 @@ export default function DiscoveryTab({
                                             {tier.label}
                                         </span>
                                     </td>
-                                    <td className="px-4 py-3 text-stone-500 text-xs">
+                                    <td className="px-4 py-3 text-stone-400 text-xs">
                                         {timeAgo(p.posted_at || p.first_seen_at)}
                                     </td>
                                     <td className="px-4 py-3">
-                                        <span className="px-2 py-0.5 rounded text-[10px] border bg-stone-900 border-white/[0.06] text-stone-300">
+                                        <span className="px-2 py-0.5 rounded text-[10px] border bg-stone-100 border-stone-200 text-stone-700">
                                             {p.status}
                                         </span>
                                     </td>
@@ -1142,7 +1166,7 @@ export default function DiscoveryTab({
                         })}
                         {postings.length === 0 && (
                             <tr>
-                                <td colSpan={7} className="px-4 py-12 text-center text-stone-500 text-sm">
+                                <td colSpan={7} className="px-4 py-12 text-center text-stone-400 text-sm">
                                     {loading
                                         ? "Loading…"
                                         : configs.length === 0

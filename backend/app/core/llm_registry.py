@@ -1,6 +1,7 @@
 """LLM Registry — unified interface for managing LLM providers."""
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 # Providers whose APIs reject requests that include a `tools` parameter
 NO_TOOL_SUPPORT_PROVIDERS: frozenset[str] = frozenset({"perplexity"})
+
+# Anthropic Claude 4+ models have deprecated the `temperature` parameter.
+_ANTHROPIC_NO_TEMP_RE = re.compile(r"claude-(?:opus|sonnet|haiku)-4")
 
 
 class LLMRegistry:
@@ -85,14 +89,16 @@ class LLMRegistry:
             )
         elif provider == "anthropic":
             api_key = self._get_api_key(provider, settings.anthropic_api_key)
-            return ChatAnthropic(
+            anthropic_kwargs: dict[str, Any] = dict(
                 model=model,
                 api_key=api_key,
-                temperature=temperature,
                 max_tokens=max_tokens,
                 streaming=streaming,
                 tags=tags,
             )
+            if not _ANTHROPIC_NO_TEMP_RE.search(model):
+                anthropic_kwargs["temperature"] = temperature
+            return ChatAnthropic(**anthropic_kwargs)
         elif provider == "google":
             api_key = self._get_api_key(provider, settings.google_api_key)
             return ChatGoogleGenerativeAI(
