@@ -30,6 +30,7 @@ import {
     type JobApplicationStats,
     type JobAppStatus,
 } from "@/lib/api";
+import DiscoveryTab from "./components/DiscoveryTab";
 
 // ─── Status config ─────────────────────────────────────────────────────────────
 
@@ -670,6 +671,10 @@ export default function JobApplicationsPage() {
     const [search, setSearch] = useState("");
     const [statusFilter, setStatusFilter] = useState<string>("");
     const [selected, setSelected] = useState<JobApplication | null>(null);
+    const [tab, setTab] = useState<"pipeline" | "discover">("pipeline");
+    // When Discover -> Apply promotes a posting, jump back to Pipeline and
+    // preselect the new application.
+    const [pendingSelectAppId, setPendingSelectAppId] = useState<string | null>(null);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -690,6 +695,16 @@ export default function JobApplicationsPage() {
     useEffect(() => {
         load();
     }, [load]);
+
+    // After Discover -> Apply, hop back to Pipeline and open the new app
+    useEffect(() => {
+        if (!pendingSelectAppId) return;
+        const found = apps.find((a) => a.id === pendingSelectAppId);
+        if (found) {
+            setSelected(found);
+            setPendingSelectAppId(null);
+        }
+    }, [apps, pendingSelectAppId]);
 
     const patch = async (id: string, data: Partial<JobApplication>) => {
         const updated = await jobApplicationsApi.update(id, data);
@@ -718,17 +733,55 @@ export default function JobApplicationsPage() {
                             <Briefcase className="text-indigo-400" /> Job Applications
                         </h1>
                         <p className="text-sm text-stone-400 mt-1">
-                            Jobs captured from LinkedIn via the Sutra Chrome extension.
+                            {tab === "pipeline"
+                                ? "Jobs captured from LinkedIn via the Sutra Chrome extension."
+                                : "Discover fresh postings across ATS feeds, filtered for H-1B sponsors."}
                         </p>
                     </div>
+                    {tab === "pipeline" && (
+                        <button
+                            onClick={load}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 bg-stone-900 border border-white/[0.06] hover:border-white/[0.12] rounded-lg text-sm"
+                        >
+                            <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
+                        </button>
+                    )}
+                </div>
+
+                {/* Tab strip */}
+                <div className="inline-flex bg-stone-900 border border-white/[0.06] rounded-lg p-0.5">
                     <button
-                        onClick={load}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 bg-stone-900 border border-white/[0.06] hover:border-white/[0.12] rounded-lg text-sm"
+                        onClick={() => setTab("pipeline")}
+                        className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
+                            tab === "pipeline"
+                                ? "bg-white/[0.08] text-white"
+                                : "text-stone-400 hover:text-stone-200"
+                        }`}
                     >
-                        <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
+                        Pipeline
+                    </button>
+                    <button
+                        onClick={() => setTab("discover")}
+                        className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
+                            tab === "discover"
+                                ? "bg-white/[0.08] text-white"
+                                : "text-stone-400 hover:text-stone-200"
+                        }`}
+                    >
+                        Discover
                     </button>
                 </div>
 
+                {tab === "discover" ? (
+                    <DiscoveryTab
+                        onAppliedJump={(applicationId) => {
+                            setPendingSelectAppId(applicationId);
+                            setTab("pipeline");
+                            load();
+                        }}
+                    />
+                ) : (
+                    <>
                 {/* Stats */}
                 {stats && (
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -901,6 +954,8 @@ export default function JobApplicationsPage() {
                         onStatusChange={(id, s) => patch(id, { status: s })}
                         onOpen={(a) => setSelected(a)}
                     />
+                )}
+                    </>
                 )}
             </div>
 
