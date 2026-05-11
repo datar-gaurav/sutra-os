@@ -1,11 +1,20 @@
-"""Agent lifecycle manager — start, stop, restart agents."""
+"""Agent lifecycle manager — start, stop, restart agents.
+
+What's cached per running agent:
+    shell:  AgentShell  — LLM + base prompt + base tool IDs (built once)
+    config: dict        — the original DB-shaped config (for budget/voice/etc.)
+
+Skills are NOT cached here. The orchestrator fetches the agent's attached
+skills (AgentSkill rows) per turn and passes them through the router →
+build_executor_for_turn — so attaching/detaching a skill takes effect on the
+next turn without restarting the agent.
+"""
 
 import asyncio
 import logging
 from typing import Any
 
-from app.agents.factory import build_agent
-from app.core.llm_registry import llm_registry
+from app.agents.factory import AgentShell, build_agent_shell
 from app.core.watchdog import watchdog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,32 +35,24 @@ class AgentManager:
         return self._locks[agent_id]
 
     async def start_agent(self, agent_config: dict) -> dict:
-        """Build and register an agent as running.
-
-        Args:
-            agent_config: Dict with agent configuration from DB.
-
-        Returns:
-            Status dict.
-        """
+        """Build and register an agent as running."""
         agent_id = agent_config["id"]
         async with self._get_lock(agent_id):
             if agent_id in self._running_agents:
                 return {"status": "already_running", "agent_id": agent_id}
 
             try:
-                executor = build_agent(agent_config)
+                shell = build_agent_shell(agent_config)
                 self._running_agents[agent_id] = {
-                    "executor": executor,
+                    "shell": shell,
                     "config": agent_config,
                     "status": "running",
                 }
                 logger.info(f"Agent '{agent_config['name']}' started successfully.")
                 watchdog.register(agent_id)
 
-                # If Telegram is enabled, Chat ID is set, and online notification is enabled, send status update
-                if (agent_config.get("telegram_enabled") and 
-                    agent_config.get("telegram_chat_id") and 
+                if (agent_config.get("telegram_enabled") and
+                    agent_config.get("telegram_chat_id") and
                     agent_config.get("online_notification_enabled")):
                     from app.integrations.telegram_bot import send_telegram_message
                     asyncio.create_task(send_telegram_message(
@@ -65,7 +66,6 @@ class AgentManager:
                 return {"status": "error", "agent_id": agent_id, "error": str(e)}
 
     async def stop_agent(self, agent_id: str) -> dict:
-        """Stop a running agent."""
         async with self._get_lock(agent_id):
             if agent_id not in self._running_agents:
                 return {"status": "not_running", "agent_id": agent_id}
@@ -73,7 +73,6 @@ class AgentManager:
             del self._running_agents[agent_id]
             watchdog.unregister(agent_id)
 
-            # Close any browser sessions belonging to this agent
             try:
                 from app.core.browser_session_manager import browser_session_manager
                 await browser_session_manager.close_all_for_agent(agent_id)
@@ -84,24 +83,18 @@ class AgentManager:
             return {"status": "stopped", "agent_id": agent_id}
 
     async def restart_agent(self, agent_config: dict) -> dict:
-        """Restart an agent with (potentially updated) configuration."""
         agent_id = agent_config["id"]
         await self.stop_agent(agent_id)
         return await self.start_agent(agent_config)
 
-    def get_executor(self, agent_id: str):
-        """Get the AgentExecutor for a running agent."""
+    def get_shell(self, agent_id: str) -> AgentShell | None:
         entry = self._running_agents.get(agent_id)
-        if entry:
-            return entry["executor"]
-        return None
+        return entry.get("shell") if entry else None
 
     def get_info(self, agent_id: str) -> dict | None:
         """Get the config dict for a running agent (includes budget fields)."""
         entry = self._running_agents.get(agent_id)
-        if entry:
-            return entry.get("config")
-        return None
+        return entry.get("config") if entry else None
 
     def is_running(self, agent_id: str) -> bool:
         return agent_id in self._running_agents
@@ -111,41 +104,24 @@ class AgentManager:
 
     def get_agent_status(self, agent_id: str) -> str:
         entry = self._running_agents.get(agent_id)
-        if entry:
-            return entry.get("status", "unknown")
-        return "stopped"
+        return entry.get("status", "unknown") if entry else "stopped"
 
     async def restore_running_agents(self, db: AsyncSession):
-        """Query the database for agents that should be running and start them."""
+        """Query the database for agents that should be running and start them.
+
+        Skills are NOT hydrated here — the orchestrator fetches them per turn.
+        """
         from app.models.agent import Agent
-        
+
         result = await db.execute(select(Agent).where(Agent.status == "running"))
         active_agents = result.scalars().all()
-        
+
         if not active_agents:
             logger.info("No active agents found to restore.")
             return
 
-        from app.models.skill import AgentSkill
-        from sqlalchemy.orm import selectinload
-
         logger.info(f"Restoring {len(active_agents)} active agents...")
         for agent in active_agents:
-            # Load attached active skills
-            skill_result = await db.execute(
-                select(AgentSkill)
-                .options(selectinload(AgentSkill.skill))
-                .where(AgentSkill.agent_id == agent.id, AgentSkill.is_active == True)  # noqa: E712
-                .order_by(AgentSkill.priority)
-            )
-            skill_rows = skill_result.scalars().all()
-            skill_fragments = [row.skill.prompt_fragment for row in skill_rows]
-            skill_tool_ids = []
-            skill_config_overrides: dict = {}
-            for row in skill_rows:
-                skill_tool_ids.extend(row.skill.required_tool_ids or [])
-                skill_config_overrides.update(row.config_overrides or {})
-
             config = {
                 "id": agent.id,
                 "name": agent.name,
@@ -163,12 +139,10 @@ class AgentManager:
                 "telegram_enabled": agent.telegram_enabled,
                 "telegram_chat_id": agent.telegram_chat_id,
                 "online_notification_enabled": agent.online_notification_enabled,
-                "skill_fragments": skill_fragments,
-                "skill_tool_ids": list(dict.fromkeys(skill_tool_ids)),
-                "skill_config_overrides": skill_config_overrides,
                 "auto_approve_below": agent.auto_approve_below,
                 "max_tool_calls_per_run": agent.max_tool_calls_per_run or 0,
                 "max_tokens_per_day": agent.max_tokens_per_day or 0,
+                "skill_routing_enabled": getattr(agent, "skill_routing_enabled", None),
             }
             try:
                 await self.start_agent(config)

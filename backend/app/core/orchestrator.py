@@ -117,20 +117,46 @@ async def _fetch_memory_context(agent_id: str, query: str, db: AsyncSession) -> 
         return ""
 
 
-async def _fetch_skill_fragments(skill_ids: list[str], db: AsyncSession) -> list[str]:
-    """Fetch prompt_fragment strings for the given skill IDs."""
+async def _fetch_attached_skills(agent_id: str, db: AsyncSession) -> list:
+    """Fetch the agent's attached skills, hydrated with routing metadata.
+
+    Returns a list of AttachedSkill, suitable for skill_router.route().
+    """
+    from app.models.skill import AgentSkill, Skill
+    from app.skills.router import AttachedSkill, parse_trigger_embedding
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
     try:
-        from app.models.skill import Skill
-        from sqlalchemy import select
         result = await db.execute(
-            select(Skill.prompt_fragment).where(
-                Skill.id.in_(skill_ids),
-                Skill.is_active == True,  # noqa: E712
+            select(AgentSkill)
+            .options(selectinload(AgentSkill.skill))
+            .where(
+                AgentSkill.agent_id == agent_id,
+                AgentSkill.is_active == True,  # noqa: E712
             )
+            .order_by(AgentSkill.priority)
         )
-        return [row for row in result.scalars().all() if row]
+        rows = result.scalars().all()
+        attached: list[AttachedSkill] = []
+        for row in rows:
+            sk: Skill | None = row.skill
+            if sk is None or not sk.is_active:
+                continue
+            attached.append(
+                AttachedSkill(
+                    slug=sk.slug,
+                    name=sk.name,
+                    description=sk.description or "",
+                    always_load=bool(getattr(row, "always_load", False)),
+                    config_overrides=row.config_overrides or {},
+                    trigger_embedding=parse_trigger_embedding(sk.trigger_embedding),
+                    routing_threshold=sk.routing_threshold,
+                )
+            )
+        return attached
     except Exception as e:
-        logger.debug(f"Skill fragment fetch failed: {e}")
+        logger.debug(f"attached-skill fetch failed: {e}")
         return []
 
 
@@ -164,21 +190,27 @@ class Orchestrator:
         db: AsyncSession | None,
         exclude: set[tuple[str, str]] | None = None,
         purpose_override_id: str | None = None,
+        loaded_skills: list | None = None,
     ) -> tuple[Any, str | None, str | None, int]:
-        """Resolve executor, optionally using smart routing for purpose-based agents.
+        """Resolve executor for this turn — wraps the agent's shell with the
+        skill overlay routed for this message.
 
         Returns: (executor, provider, model, refresh_interval_hours)
-        For legacy agents: (pre-built executor, None, None, 24)
-        For purpose-based: (new executor, provider, model, refresh_hours)
+        For legacy agents: (executor, None, None, 24)
+        For purpose-based: (executor, provider, model, refresh_hours)
         """
+        from app.agents.factory import build_executor_for_turn
+
         info = agent_manager.get_info(agent_id)
+        shell = agent_manager.get_shell(agent_id)
+        if shell is None:
+            return None, None, None, 24
+
         purpose_id = purpose_override_id or (info.get("purpose_id") if info else None)
 
         if purpose_id and db:
-            # Smart routing: resolve model per-request
             from app.core.llm_queue import acquire_model
             from app.core.llm_registry import llm_registry
-            from app.agents.factory import build_agent
 
             try:
                 provider, model, refresh_hours = await acquire_model(
@@ -187,7 +219,6 @@ class Orchestrator:
             except Exception as e:
                 raise RuntimeError(f"Smart routing failed: {e}")
 
-            # Build a fresh LLM + executor for this specific request
             llm = llm_registry.get_chat_model(
                 provider=provider,
                 model=model,
@@ -195,12 +226,66 @@ class Orchestrator:
                 max_tokens=info.get("max_tokens", 4096),
                 streaming=True,
             )
-            executor = build_agent(info, llm=llm, actual_provider=provider)
+            executor = build_executor_for_turn(
+                shell,
+                loaded_skills=loaded_skills,
+                llm_override=llm,
+                provider_override=provider,
+            )
             return executor, provider, model, refresh_hours
 
-        # Legacy path: use pre-built executor
-        executor = agent_manager.get_executor(agent_id)
+        # Legacy path: assemble per-turn executor from the cached shell
+        executor = build_executor_for_turn(shell, loaded_skills=loaded_skills)
         return executor, None, None, 24
+
+    async def _route_skills(
+        self,
+        agent_id: str,
+        message: str,
+        db: AsyncSession | None,
+    ) -> list:
+        """Run the per-turn skill router for the given agent.
+
+        Returns a list of LoadedSkill ready for build_executor_for_turn.
+        Honors the global SKILL_ROUTING_ENABLED toggle and the per-agent
+        skill_routing_enabled override.
+        """
+        from app.config import settings
+        from app.skills.loader import load_skill_for_turn
+        from app.skills.router import skill_router
+
+        if db is None:
+            return []
+        attached = await _fetch_attached_skills(agent_id, db)
+        if not attached:
+            return []
+
+        info = agent_manager.get_info(agent_id) or {}
+        per_agent = info.get("skill_routing_enabled")
+        routing_on = per_agent if per_agent is not None else bool(getattr(settings, "skill_routing_enabled", True))
+
+        if not routing_on:
+            # Load every attached skill (legacy "always load all" behavior)
+            chosen_slugs = [a.slug for a in attached]
+        else:
+            decision = await skill_router.route(message, attached)
+            chosen_slugs = decision.load_slugs
+            logger.debug(
+                f"skill route agent={agent_id} strategy={decision.strategy} "
+                f"loaded={chosen_slugs} fallback={decision.fallback_used} "
+                f"latency_ms={decision.latency_ms}"
+            )
+
+        # Hydrate to LoadedSkill, preserving each attachment's config_overrides
+        by_slug = {a.slug: a for a in attached}
+        loaded: list = []
+        for slug in chosen_slugs:
+            att = by_slug.get(slug)
+            overrides = att.config_overrides if att else None
+            ls = load_skill_for_turn(slug, overrides)
+            if ls is not None:
+                loaded.append(ls)
+        return loaded
 
     async def route_message(
         self,
@@ -208,22 +293,11 @@ class Orchestrator:
         message: str,
         chat_history: list[dict] | None = None,
         db: AsyncSession | None = None,
-        extra_skill_ids: list[str] | None = None,
         purpose_override_id: str | None = None,
     ) -> dict[str, Any]:
         """Route a message to a specific agent and return the response."""
         info = agent_manager.get_info(agent_id)
-        purpose_id = purpose_override_id or (info.get("purpose_id") if info else None)
-
-        # For legacy agents, check executor is running
-        if not purpose_id:
-            executor = agent_manager.get_executor(agent_id)
-            if not executor:
-                return {
-                    "output": f"Agent {agent_id} is not running. Please start it first.",
-                    "error": True,
-                }
-        elif not info:
+        if not info:
             return {
                 "output": f"Agent {agent_id} is not running. Please start it first.",
                 "error": True,
@@ -231,16 +305,16 @@ class Orchestrator:
 
         # Run budget check + memory fetch sequentially (same db session — no concurrent ops)
         memory_context = ""
-        extra_skill_fragments: list[str] = []
         if db:
             budget_error = await self._check_daily_token_budget(agent_id, db)
             if budget_error:
                 return {"output": budget_error, "error": True}
             memory_context = await _fetch_memory_context(agent_id, message, db)
-            if extra_skill_ids:
-                extra_skill_fragments = await _fetch_skill_fragments(extra_skill_ids, db)
 
-        messages = self._build_messages(message, chat_history, memory_context, extra_skill_fragments)
+        # Per-turn skill routing (honors SKILL_ROUTING_ENABLED + per-agent override)
+        loaded_skills = await self._route_skills(agent_id, message, db)
+
+        messages = self._build_messages(message, chat_history, memory_context)
 
         # Pre-request token guard
         messages, estimated_input_tokens = self._guard_token_limit(messages, agent_id)
@@ -260,6 +334,7 @@ class Orchestrator:
                         agent_id, estimated_input_tokens, db,
                         exclude=excluded_models or None,
                         purpose_override_id=purpose_override_id,
+                        loaded_skills=loaded_skills,
                     )
                 )
             except RuntimeError as e:
@@ -481,17 +556,9 @@ class Orchestrator:
         message: str,
         chat_history: list[dict] | None = None,
         db: AsyncSession | None = None,
-        extra_skill_ids: list[str] | None = None,
         purpose_override_id: str | None = None,
     ):
-        """Stream a response from an agent, yielding chunks.
-
-        Opens a root MLflow span for the entire chat turn so that LangChain
-        autolog spans (per-LLM-call) and LangGraph node spans nest underneath
-        a single trace. The actual streaming logic lives in
-        ``_stream_message_impl`` to keep the span context manager scope
-        readable; ``_impl`` may set additional attributes on ``root_span``.
-        """
+        """Stream a response from an agent, yielding chunks."""
         with span(
             "orchestrator.chat_turn",
             agent_id=str(agent_id),
@@ -501,7 +568,6 @@ class Orchestrator:
             log_text("user_message.txt", message)
             async for chunk in self._stream_message_impl(
                 agent_id, message, chat_history, db, root_span,
-                extra_skill_ids=extra_skill_ids,
                 purpose_override_id=purpose_override_id,
             ):
                 yield chunk
@@ -513,35 +579,27 @@ class Orchestrator:
         chat_history: list[dict] | None = None,
         db: AsyncSession | None = None,
         root_span: Any = None,
-        extra_skill_ids: list[str] | None = None,
         purpose_override_id: str | None = None,
     ):
         """Inner streaming logic. Wrapped by ``stream_message`` for tracing."""
         info = agent_manager.get_info(agent_id)
-        purpose_id = purpose_override_id or (info.get("purpose_id") if info else None)
-
-        if not purpose_id:
-            executor = agent_manager.get_executor(agent_id)
-            if not executor:
-                yield {"type": "error", "content": f"Agent {agent_id} is not running."}
-                return
-        elif not info:
+        if not info:
             yield {"type": "error", "content": f"Agent {agent_id} is not running."}
             return
 
         # Run budget check + memory fetch sequentially (same db session — no concurrent ops)
         memory_context = ""
-        extra_skill_fragments: list[str] = []
         if db:
             budget_error = await self._check_daily_token_budget(agent_id, db)
             if budget_error:
                 yield {"type": "error", "content": budget_error}
                 return
             memory_context = await _fetch_memory_context(agent_id, message, db)
-            if extra_skill_ids:
-                extra_skill_fragments = await _fetch_skill_fragments(extra_skill_ids, db)
 
-        messages = self._build_messages(message, chat_history, memory_context, extra_skill_fragments)
+        # Per-turn skill routing
+        loaded_skills = await self._route_skills(agent_id, message, db)
+
+        messages = self._build_messages(message, chat_history, memory_context)
 
         # Pre-request token guard
         messages, estimated_input_tokens = self._guard_token_limit(messages, agent_id)
@@ -561,6 +619,7 @@ class Orchestrator:
                         agent_id, estimated_input_tokens, db,
                         exclude=excluded_models or None,
                         purpose_override_id=purpose_override_id,
+                        loaded_skills=loaded_skills,
                     )
                 )
             except RuntimeError as e:
@@ -805,7 +864,6 @@ class Orchestrator:
         message: str,
         chat_history: list[dict] | None = None,
         memory_context: str = "",
-        extra_skill_fragments: list[str] | None = None,
     ):
         """Convert chat history + current message to LangChain messages."""
         import re
@@ -813,10 +871,6 @@ class Orchestrator:
 
         if memory_context:
             messages.append(SystemMessage(content=memory_context))
-
-        if extra_skill_fragments:
-            fragments_text = "\n\n".join(extra_skill_fragments)
-            messages.append(SystemMessage(content=f"[Active skills for this conversation]\n\n{fragments_text}"))
 
         # Time context injection
         now = datetime.now(timezone.utc)

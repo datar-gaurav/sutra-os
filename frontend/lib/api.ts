@@ -1879,20 +1879,24 @@ export const emailApi = {
 
 export interface Skill {
     id: string;
+    slug: string;
     name: string;
     description: string | null;
-    version: string;
-    category: string;
-    prompt_fragment: string;
-    required_tool_ids: string[];
-    config_schema: Record<string, any> | null;
-    source: "builtin" | "custom";
-    icon: string | null;
-    color: string | null;
     is_active: boolean;
-    created_by_agent_id: string | null;
+    routing_threshold: number | null;
+    trigger_embed_model: string | null;
     created_at: string;
     updated_at: string;
+    // Filesystem manifest fields (populated by list/get endpoints)
+    body?: string;
+    tools?: string[];
+    config_schema?: Record<string, any> | null;
+    icon?: string | null;
+    color?: string | null;
+    version?: string;
+    category?: string;
+    source?: "builtin" | "custom";
+    files?: string[];
 }
 
 export interface AgentSkill {
@@ -1902,6 +1906,7 @@ export interface AgentSkill {
     priority: number;
     config_overrides: Record<string, any>;
     is_active: boolean;
+    always_load: boolean;
     skill: Skill;
     created_at: string;
     updated_at: string;
@@ -1913,9 +1918,18 @@ export interface RoleSkill {
     skill_id: string;
     priority: number;
     config_overrides: Record<string, any>;
+    always_load: boolean;
     skill: Skill;
     created_at: string;
     updated_at: string;
+}
+
+export interface SkillReseedSummary {
+    created: string[];
+    updated: string[];
+    deactivated: string[];
+    re_embedded: string[];
+    embed_model: string;
 }
 
 export const skillsApi = {
@@ -1925,13 +1939,9 @@ export const skillsApi = {
         return apiFetch<Skill[]>(`/api/skills/${qs}`);
     },
     get: (id: string) => apiFetch<Skill>(`/api/skills/${id}`),
-    create: (data: Partial<Skill>) =>
-        apiFetch<Skill>("/api/skills/", { method: "POST", body: JSON.stringify(data) }),
-    update: (id: string, data: Partial<Skill>) =>
+    update: (id: string, data: { routing_threshold?: number | null; is_active?: boolean }) =>
         apiFetch<Skill>(`/api/skills/${id}`, { method: "PUT", body: JSON.stringify(data) }),
-    delete: (id: string) => apiFetch<void>(`/api/skills/${id}`, { method: "DELETE" }),
-    reseed: () =>
-        apiFetch<{ created: string[]; updated: string[] }>("/api/skills/reseed"),
+    reseed: () => apiFetch<SkillReseedSummary>("/api/skills/reseed", { method: "POST" }),
     exportBundle: (skillIds: string[]) =>
         apiFetch<{ version: string; exported_at: string; skills: Skill[] }>("/api/skills/export", {
             method: "POST",
@@ -1940,7 +1950,7 @@ export const skillsApi = {
     importBundle: (file: File) => {
         const form = new FormData();
         form.append("file", file);
-        return apiFetch<{ created: string[]; skipped: string[] }>("/api/skills/import", {
+        return apiFetch<{ created: string[]; skipped: string[]; note?: string }>("/api/skills/import", {
             method: "POST",
             body: form,
             headers: {},
@@ -1949,7 +1959,10 @@ export const skillsApi = {
     // Agent-skill associations
     listForAgent: (agentId: string) =>
         apiFetch<AgentSkill[]>(`/api/agents/${agentId}/skills/`),
-    attachToAgent: (agentId: string, data: { skill_id: string; priority?: number; config_overrides?: Record<string, any> }) =>
+    attachToAgent: (
+        agentId: string,
+        data: { skill_id: string; priority?: number; config_overrides?: Record<string, any>; always_load?: boolean },
+    ) =>
         apiFetch<AgentSkill>(`/api/agents/${agentId}/skills/`, {
             method: "POST",
             body: JSON.stringify(data),

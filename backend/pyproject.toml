@@ -52,6 +52,8 @@ dependencies = [
     "pytrends>=4.9.0",
     "docker>=7.0.0",
     "mlflow>=3.0.0",
+    "python-frontmatter>=1.1.0",
+    "xxhash>=3.5.0",
 ]
 
 [project.scripts]
@@ -72,6 +74,10 @@ build-backend = "setuptools.build_meta"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.setuptools]
 packages = ["app", "app.cli"]

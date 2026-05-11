@@ -246,30 +246,12 @@ async def delete_agent(
 
 
 async def _get_agent_skills_config(db: AsyncSession, agent_id: str) -> dict:
-    """Fetch attached active skills and return prompt fragments, tool IDs, and config overrides."""
-    from app.models.skill import AgentSkill
-    from sqlalchemy.orm import selectinload as _selectinload
-    
-    skill_result = await db.execute(
-        select(AgentSkill)
-        .options(_selectinload(AgentSkill.skill))
-        .where(AgentSkill.agent_id == agent_id, AgentSkill.is_active == True)  # noqa: E712
-        .order_by(AgentSkill.priority)
-    )
-    skill_rows = skill_result.scalars().all()
-    skill_fragments = []
-    skill_tool_ids = []
-    skill_config_overrides: dict = {}
-    for row in skill_rows:
-        skill_fragments.append(row.skill.prompt_fragment)
-        skill_tool_ids.extend(row.skill.required_tool_ids or [])
-        skill_config_overrides.update(row.config_overrides or {})
-        
-    return {
-        "skill_fragments": skill_fragments,
-        "skill_tool_ids": list(dict.fromkeys(skill_tool_ids)),
-        "skill_config_overrides": skill_config_overrides,
-    }
+    """Deprecated. Skills are now fetched per-turn by the orchestrator; the agent
+    config no longer carries skill_fragments/skill_tool_ids/skill_config_overrides.
+
+    Kept as a stub for any caller that still references it.
+    """
+    return {}
 
 
 @router.post("/{agent_id}/start")
@@ -283,8 +265,6 @@ async def start_agent(
     agent = await db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-
-    skills_config = await _get_agent_skills_config(db, agent_id)
 
     config = {
         "id": agent.id,
@@ -303,12 +283,10 @@ async def start_agent(
         "telegram_enabled": agent.telegram_enabled,
         "telegram_chat_id": agent.telegram_chat_id,
         "online_notification_enabled": agent.online_notification_enabled,
-        "skill_fragments": skills_config["skill_fragments"],
-        "skill_tool_ids": skills_config["skill_tool_ids"],
-        "skill_config_overrides": skills_config["skill_config_overrides"],
         "auto_approve_below": agent.auto_approve_below,
         "max_tool_calls_per_run": agent.max_tool_calls_per_run or 0,
         "max_tokens_per_day": agent.max_tokens_per_day or 0,
+        "skill_routing_enabled": getattr(agent, "skill_routing_enabled", None),
     }
     result = await agent_manager.start_agent(config)
 
@@ -397,8 +375,6 @@ async def restart_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    skills_config = await _get_agent_skills_config(db, agent_id)
-
     config = {
         "id": agent.id,
         "name": agent.name,
@@ -416,12 +392,10 @@ async def restart_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
         "telegram_enabled": agent.telegram_enabled,
         "telegram_chat_id": agent.telegram_chat_id,
         "online_notification_enabled": agent.online_notification_enabled,
-        "skill_fragments": skills_config["skill_fragments"],
-        "skill_tool_ids": skills_config["skill_tool_ids"],
-        "skill_config_overrides": skills_config["skill_config_overrides"],
         "auto_approve_below": agent.auto_approve_below,
         "max_tool_calls_per_run": agent.max_tool_calls_per_run or 0,
         "max_tokens_per_day": agent.max_tokens_per_day or 0,
+        "skill_routing_enabled": getattr(agent, "skill_routing_enabled", None),
     }
     result = await agent_manager.restart_agent(config)
 

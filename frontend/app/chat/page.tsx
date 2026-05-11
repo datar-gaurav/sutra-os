@@ -537,7 +537,6 @@ export default function ChatPage() {
                     agent_id: selectedAgent.id,
                     message: userMessage,
                     conversation_id: activeConversationId,
-                    extra_skill_ids: conversationSkillIds.length > 0 ? conversationSkillIds : undefined,
                     purpose_override_id: purposeOverrideId || undefined,
                 }),
             });

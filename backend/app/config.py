@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     # Browser Automation — playbook directory (relative to backend/ or absolute)
     playbooks_dir: str = "data/playbooks"
 
+    # Skills — filesystem-backed manifests
+    custom_skills_dir: str = "data/skills"      # writable volume for user-authored skills
+    skill_routing_enabled: bool = True          # global toggle; per-agent override on Agent.skill_routing_enabled
+    skill_router_strategy: str = "embedding"    # "embedding" | "llm" | "hybrid"
+    skill_routing_threshold: float = 0.4        # cosine threshold for embedding strategy
+    skill_router_top_k: int = 2                 # max skills to load per turn
+    skill_router_ambiguity_delta: float = 0.05  # hybrid: top1−top2 below this → defer to LLM
+    skill_router_llm_model: str = "llama3.1:8b" # Ollama model for LLM/hybrid routing
+
     # Scheduled check-ins — cron expression in America/Los_Angeles timezone
     # Default: 8:00 AM Pacific (handles DST automatically)
     checkin_cron: str = "0 8 * * *"

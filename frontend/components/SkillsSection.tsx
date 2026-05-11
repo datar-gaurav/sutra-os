@@ -306,10 +306,10 @@ export function SkillsSection({ agentId }: { agentId: string }) {
         .filter(s => s.is_active)
         .sort((a, b) => a.priority - b.priority)
         .map(s => {
-            let frag = s.skill.prompt_fragment;
+            let frag = s.skill.body ?? "";
             try { Object.entries(s.config_overrides || {}).forEach(([k, v]) => { frag = frag.replaceAll(`{${k}}`, String(v)); }); } catch {}
             return frag;
-        }).join("\n\n---\n\n");
+        }).filter(Boolean).join("\n\n---\n\n");
 
     return (
         <div className="glass-card p-6 space-y-4">
@@ -369,15 +369,15 @@ export function SkillsSection({ agentId }: { agentId: string }) {
                                 {row.skill.description && (
                                     <p className="text-xs text-gray-500 truncate mt-0.5">{row.skill.description}</p>
                                 )}
-                                {row.skill.required_tool_ids.length > 0 && (
+                                {(row.skill.tools?.length ?? 0) > 0 && (
                                     <div className="flex flex-wrap gap-1 mt-1.5">
-                                        {row.skill.required_tool_ids.slice(0, 4).map(t => (
+                                        {(row.skill.tools ?? []).slice(0, 4).map(t => (
                                             <span key={t} className="text-[10px] bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded font-mono border border-gray-200 dark:border-gray-600">
                                                 {t}
                                             </span>
                                         ))}
-                                        {row.skill.required_tool_ids.length > 4 && (
-                                            <span className="text-[10px] text-gray-400">+{row.skill.required_tool_ids.length - 4}</span>
+                                        {(row.skill.tools?.length ?? 0) > 4 && (
+                                            <span className="text-[10px] text-gray-400">+{(row.skill.tools?.length ?? 0) - 4}</span>
                                         )}
                                     </div>
                                 )}

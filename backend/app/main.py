@@ -274,27 +274,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to seed agent templates: {e}")
 
-    # Seed builtin skills
+    # Load filesystem skill manifests and sync them to the DB
     try:
         from app.db.session import async_session_factory
-        from app.models.skill import Skill, BUILTIN_SKILLS
-        from sqlalchemy import select
+        from app.skills.registry import skill_registry
+        from app.skills.sync import sync_to_db
+        n = skill_registry.reload(custom_skills_dir=settings.custom_skills_dir)
         async with async_session_factory() as db:
-            for skill_data in BUILTIN_SKILLS:
-                result = await db.execute(
-                    select(Skill).where(Skill.name == skill_data["name"])
-                )
-                existing = result.scalars().first()
-                if existing:
-                    for field, value in skill_data.items():
-                        setattr(existing, field, value)
-                    existing.source = "builtin"
-                else:
-                    db.add(Skill(source="builtin", **skill_data))
-            await db.commit()
-        logger.info("✅ Builtin skills seeded.")
+            summary = await sync_to_db(db)
+        logger.info(
+            f"✅ Skills loaded: {n} on disk, "
+            f"+{len(summary['created'])} created, "
+            f"~{len(summary['updated'])} updated, "
+            f"-{len(summary['deactivated'])} deactivated, "
+            f"{len(summary['re_embedded'])} re-embedded."
+        )
     except Exception as e:
-        logger.error(f"Failed to seed builtin skills: {e}")
+        logger.error(f"Failed to load/sync skills: {e}")
 
     # Seed built-in Social Pulse niches
     try:

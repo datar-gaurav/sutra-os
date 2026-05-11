@@ -1,4 +1,12 @@
-"""Skills API — CRUD for skills, agent-skill associations, role-skill associations."""
+"""Skills API.
+
+Skill *content* (body, tools, config_schema, icon, etc.) is read from disk via
+the SkillRegistry. The DB only tracks attachment joins, cached metadata, and
+routing fields.
+
+The /reseed endpoint syncs the in-memory registry to the DB (upserts rows,
+recomputes trigger embeddings when descriptions change).
+"""
 
 import json
 from datetime import datetime, timezone
@@ -14,44 +22,68 @@ from app.api.schemas import (
     AgentSkillUpdate,
     RoleSkillCreate,
     RoleSkillResponse,
-    SkillCreate,
+    SkillDetailResponse,
     SkillExportBundle,
     SkillResponse,
     SkillUpdate,
 )
 from app.db.session import get_db
-from app.models.skill import AgentSkill, RoleSkill, Skill, BUILTIN_SKILLS
+from app.models.skill import AgentSkill, RoleSkill, Skill
+from app.skills.registry import skill_registry
+from app.skills.sync import sync_to_db
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 agent_skills_router = APIRouter(prefix="/agents/{agent_id}/skills", tags=["skills"])
 role_skills_router = APIRouter(prefix="/roles/{role_id}/skills", tags=["skills"])
 
 
+def _manifest_payload(slug: str) -> dict:
+    """Return the on-disk manifest fields for a given slug, or empty dict."""
+    m = skill_registry.get(slug)
+    if not m:
+        return {}
+    return {
+        "body": m.body,
+        "tools": list(m.tools),
+        "config_schema": m.config_schema,
+        "icon": m.icon,
+        "color": m.color,
+        "version": m.version,
+        "category": m.category,
+        "source": m.source,
+        "files": sorted(m.files.keys()),
+    }
+
+
 # ─── Skill CRUD ───────────────────────────────────────────────────────────────
 
 @router.get("/builtin")
-async def list_builtin_skills():
-    """Return the built-in skill definitions (from constant, no DB query needed)."""
-    return BUILTIN_SKILLS
+async def list_builtin_manifests():
+    """Return the filesystem-loaded skill manifests (read-only)."""
+    return [
+        {
+            "slug": m.slug,
+            "name": m.name,
+            "description": m.description,
+            "icon": m.icon,
+            "color": m.color,
+            "version": m.version,
+            "category": m.category,
+            "tools": m.tools,
+            "config_schema": m.config_schema,
+            "source": m.source,
+        }
+        for m in skill_registry.all()
+    ]
 
 
-@router.get("/reseed", status_code=200)
+@router.post("/reseed", status_code=200)
+@router.get("/reseed", status_code=200)  # GET kept for legacy callers
 async def reseed_skills(db: AsyncSession = Depends(get_db)):
-    """Upsert all BUILTIN_SKILLS into the skills table."""
-    created, updated = [], []
-    for skill_data in BUILTIN_SKILLS:
-        result = await db.execute(select(Skill).where(Skill.name == skill_data["name"]))
-        existing = result.scalars().first()
-        if existing:
-            for field, value in skill_data.items():
-                setattr(existing, field, value)
-            existing.source = "builtin"
-            updated.append(skill_data["name"])
-        else:
-            db.add(Skill(source="builtin", **skill_data))
-            created.append(skill_data["name"])
-    await db.commit()
-    return {"created": created, "updated": updated}
+    """Sync filesystem manifests to the DB. Recomputes trigger embeddings."""
+    skill_registry.reload()
+    summary = await sync_to_db(db)
+    return summary
 
 
 @router.get("/")
@@ -61,41 +93,66 @@ async def list_skills(
     search: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Skill).order_by(Skill.category, Skill.name)
-    if category:
-        query = query.where(Skill.category == category)
-    if source:
-        query = query.where(Skill.source == source)
-    result = await db.execute(query)
-    skills = result.scalars().all()
-    if search:
-        s = search.lower()
-        skills = [sk for sk in skills if s in sk.name.lower() or (sk.description and s in sk.description.lower())]
-    return skills
+    """List DB skill rows enriched with filesystem manifest data."""
+    result = await db.execute(select(Skill).order_by(Skill.name))
+    rows = result.scalars().all()
+    out: list[dict] = []
+    for sk in rows:
+        meta = _manifest_payload(sk.slug)
+        if category and meta.get("category") != category:
+            continue
+        if source and meta.get("source") != source:
+            continue
+        if search:
+            s = search.lower()
+            if s not in sk.name.lower() and not (sk.description and s in sk.description.lower()):
+                continue
+        out.append({
+            "id": sk.id,
+            "slug": sk.slug,
+            "name": sk.name,
+            "description": sk.description,
+            "is_active": sk.is_active,
+            "routing_threshold": sk.routing_threshold,
+            "trigger_embed_model": sk.trigger_embed_model,
+            "created_at": sk.created_at,
+            "updated_at": sk.updated_at,
+            **meta,
+        })
+    return out
 
 
-@router.post("/", status_code=201, response_model=SkillResponse)
-async def create_skill(data: SkillCreate, db: AsyncSession = Depends(get_db)):
-    existing = await db.execute(select(Skill).where(Skill.name == data.name))
-    if existing.scalars().first():
-        raise HTTPException(409, f"A skill named '{data.name}' already exists")
-    skill = Skill(source="custom", **data.model_dump())
-    db.add(skill)
-    await db.commit()
-    await db.refresh(skill)
-    return skill
-
-
-@router.get("/{skill_id}", response_model=SkillResponse)
+@router.get("/{skill_id}", response_model=SkillDetailResponse)
 async def get_skill(skill_id: str, db: AsyncSession = Depends(get_db)):
-    skill = await db.get(Skill, skill_id)
-    if not skill:
+    sk = await db.get(Skill, skill_id)
+    if not sk:
         raise HTTPException(404, "Skill not found")
-    return skill
+    meta = _manifest_payload(sk.slug)
+    return SkillDetailResponse(
+        id=sk.id,
+        slug=sk.slug,
+        name=sk.name,
+        description=sk.description,
+        is_active=sk.is_active,
+        routing_threshold=sk.routing_threshold,
+        trigger_embed_model=sk.trigger_embed_model,
+        created_at=sk.created_at,
+        updated_at=sk.updated_at,
+        body=meta.get("body", ""),
+        tools=meta.get("tools", []),
+        config_schema=meta.get("config_schema"),
+        icon=meta.get("icon"),
+        color=meta.get("color"),
+        version=meta.get("version", "1.0.0"),
+        category=meta.get("category", "general"),
+        source=meta.get("source", "builtin"),
+        files=meta.get("files", []),
+    )
 
 
 @router.put("/{skill_id}", response_model=SkillResponse)
 async def update_skill(skill_id: str, data: SkillUpdate, db: AsyncSession = Depends(get_db)):
+    """Update the DB-side metadata. Body/tools/etc. are edited on disk."""
     skill = await db.get(Skill, skill_id)
     if not skill:
         raise HTTPException(404, "Skill not found")
@@ -106,22 +163,10 @@ async def update_skill(skill_id: str, data: SkillUpdate, db: AsyncSession = Depe
     return skill
 
 
-@router.delete("/{skill_id}", status_code=204)
-async def delete_skill(skill_id: str, db: AsyncSession = Depends(get_db)):
-    skill = await db.get(Skill, skill_id)
-    if not skill:
-        raise HTTPException(404, "Skill not found")
-    if skill.source == "builtin":
-        raise HTTPException(403, "Built-in skills cannot be deleted")
-    await db.delete(skill)
-    await db.commit()
-
-
 # ─── Export / Import ──────────────────────────────────────────────────────────
 
 @router.post("/export")
 async def export_skills(body: dict, db: AsyncSession = Depends(get_db)):
-    """Export selected skills as a portable JSON bundle."""
     skill_ids = body.get("skill_ids", [])
     if not skill_ids:
         raise HTTPException(400, "skill_ids is required")
@@ -136,39 +181,22 @@ async def export_skills(body: dict, db: AsyncSession = Depends(get_db)):
 
 @router.post("/import")
 async def import_skills(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
-    """Import skills from a JSON bundle file."""
+    """Import is now a no-op stub.
+
+    Filesystem-backed skills are imported by placing the directory on disk.
+    Kept for API compat with the old JSON-bundle import.
+    """
     content = await file.read()
     try:
-        bundle_data = json.loads(content)
-        skills_data = bundle_data.get("skills", [])
+        json.loads(content)
     except (json.JSONDecodeError, AttributeError):
         raise HTTPException(400, "Invalid skill bundle format")
-
-    created, skipped = [], []
-    for sd in skills_data:
-        name = sd.get("name")
-        if not name:
-            continue
-        existing = await db.execute(select(Skill).where(Skill.name == name))
-        if existing.scalars().first():
-            skipped.append(name)
-            continue
-        skill = Skill(
-            name=name,
-            description=sd.get("description"),
-            version=sd.get("version", "1.0.0"),
-            category=sd.get("category", "general"),
-            prompt_fragment=sd.get("prompt_fragment", ""),
-            required_tool_ids=sd.get("required_tool_ids", []),
-            config_schema=sd.get("config_schema"),
-            icon=sd.get("icon"),
-            color=sd.get("color"),
-            source="custom",
-        )
-        db.add(skill)
-        created.append(name)
-    await db.commit()
-    return {"created": created, "skipped": skipped}
+    return {
+        "created": [],
+        "skipped": [],
+        "note": "Filesystem-backed skills: place the directory under backend/skills/ "
+                "or the custom_skills_dir and call /skills/reseed",
+    }
 
 
 # ─── Agent-Skill Associations ─────────────────────────────────────────────────
@@ -202,11 +230,9 @@ async def attach_skill_to_agent(
     data: AgentSkillCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    # Verify skill exists
     skill = await db.get(Skill, data.skill_id)
     if not skill:
         raise HTTPException(404, "Skill not found")
-    # Check for duplicate
     existing = await db.execute(
         select(AgentSkill).where(
             AgentSkill.agent_id == agent_id,
@@ -221,6 +247,7 @@ async def attach_skill_to_agent(
         skill_id=data.skill_id,
         priority=data.priority,
         config_overrides=data.config_overrides,
+        always_load=data.always_load,
     )
     db.add(agent_skill)
     await db.commit()
@@ -325,6 +352,7 @@ async def attach_skill_to_role(
         skill_id=data.skill_id,
         priority=data.priority,
         config_overrides=data.config_overrides,
+        always_load=data.always_load,
     )
     db.add(role_skill)
     await db.commit()
