@@ -129,9 +129,6 @@ async def seed_general_agent(db: AsyncSession) -> None:
             "secondary_model": agent.secondary_model,
             "fallback_provider": agent.fallback_provider,
             "fallback_model": agent.fallback_model,
-            "skill_fragments": [],
-            "skill_tool_ids": [],
-            "skill_config_overrides": {},
             "max_tool_calls_per_run": agent.max_tool_calls_per_run,
         }
         await agent_manager.start_agent(agent_info)

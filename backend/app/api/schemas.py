@@ -425,7 +425,6 @@ class ChatRequest(BaseModel):
     agent_id: str
     message: str
     conversation_id: str | None = None
-    extra_skill_ids: list[str] = []
     purpose_override_id: str | None = None
 
     @field_validator("message")
@@ -1163,62 +1162,58 @@ class WebhookDeliveryResponse(BaseModel):
 
 
 # ─── Skill Schemas ─────────────────────────────────────────────────────────────
-
-class SkillCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str | None = None
-    version: str = "1.0.0"
-    category: str = "general"
-    prompt_fragment: str = Field(..., min_length=1)
-    required_tool_ids: list[str] = []
-    config_schema: dict | None = None
-    icon: str | None = None
-    color: str | None = None
-
-
-class SkillUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=100)
-    description: str | None = None
-    version: str | None = None
-    category: str | None = None
-    prompt_fragment: str | None = None
-    required_tool_ids: list[str] | None = None
-    config_schema: dict | None = None
-    icon: str | None = None
-    color: str | None = None
-    is_active: bool | None = None
-
+# Skill content (body, tools, config_schema, icon, version, category) lives on
+# disk under backend/skills/<slug>/SKILL.md and is read via the registry at
+# runtime. These schemas expose only the DB-cached metadata + the routing
+# fields the UI needs.
 
 class SkillResponse(BaseModel):
     id: str
+    slug: str
     name: str
     description: str | None
-    version: str
-    category: str
-    prompt_fragment: str
-    required_tool_ids: list
-    config_schema: dict | None
-    source: str
-    icon: str | None
-    color: str | None
     is_active: bool
-    created_by_agent_id: str | None
+    routing_threshold: float | None = None
+    trigger_embed_model: str | None = None
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
 
 
+class SkillDetailResponse(SkillResponse):
+    """Skill metadata + content loaded from the filesystem manifest."""
+
+    body: str = ""
+    tools: list[str] = []
+    config_schema: dict | None = None
+    icon: str | None = None
+    color: str | None = None
+    version: str = "1.0.0"
+    category: str = "general"
+    source: str = "builtin"
+    files: list[str] = []
+
+
+class SkillUpdate(BaseModel):
+    """Permitted edits on the DB row. Filesystem content is edited on disk."""
+
+    routing_threshold: float | None = None
+    is_active: bool | None = None
+
+
 class AgentSkillCreate(BaseModel):
     skill_id: str
     priority: int = 0
     config_overrides: dict = {}
+    always_load: bool = False
 
 
 class AgentSkillUpdate(BaseModel):
     priority: int | None = None
     config_overrides: dict | None = None
     is_active: bool | None = None
+    always_load: bool | None = None
 
 
 class AgentSkillResponse(BaseModel):
@@ -1228,6 +1223,7 @@ class AgentSkillResponse(BaseModel):
     priority: int
     config_overrides: dict
     is_active: bool
+    always_load: bool = False
     skill: SkillResponse
     created_at: datetime
     updated_at: datetime
@@ -1239,6 +1235,7 @@ class RoleSkillCreate(BaseModel):
     skill_id: str
     priority: int = 0
     config_overrides: dict = {}
+    always_load: bool = False
 
 
 class RoleSkillResponse(BaseModel):
@@ -1247,6 +1244,7 @@ class RoleSkillResponse(BaseModel):
     skill_id: str
     priority: int
     config_overrides: dict
+    always_load: bool = False
     skill: SkillResponse
     created_at: datetime
     updated_at: datetime

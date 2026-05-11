@@ -150,7 +150,6 @@ async def chat(request: Request, payload: ChatRequest, db: AsyncSession = Depend
         message=effective_message,
         chat_history=chat_history,
         db=db,
-        extra_skill_ids=payload.extra_skill_ids or None,
         purpose_override_id=payload.purpose_override_id,
     )
 
@@ -271,7 +270,6 @@ async def chat_stream(request: Request, payload: ChatRequest, db: AsyncSession =
             message=user_message,
             chat_history=chat_history,
             db=db,
-            extra_skill_ids=payload.extra_skill_ids or None,
             purpose_override_id=payload.purpose_override_id,
         ):
             if chunk["type"] == "token":

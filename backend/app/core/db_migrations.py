@@ -275,6 +275,86 @@ MIGRATIONS: list[tuple[str, str]] = [
         "agents.web_voice_enabled",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS web_voice_enabled BOOLEAN NOT NULL DEFAULT false",
     ),
+    # ── Skills v2: filesystem-backed manifests + routing fields ──────────────
+    (
+        "skills.slug",
+        "ALTER TABLE skills ADD COLUMN IF NOT EXISTS slug VARCHAR(100)",
+    ),
+    (
+        "skills.slug.backfill",
+        "UPDATE skills SET slug = lower(regexp_replace(name, '[^a-zA-Z0-9]+', '-', 'g')) "
+        "WHERE slug IS NULL",
+    ),
+    (
+        "skills.slug.unique",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_slug ON skills (slug)",
+    ),
+    (
+        "skills.trigger_embedding",
+        "ALTER TABLE skills ADD COLUMN IF NOT EXISTS trigger_embedding TEXT",
+    ),
+    (
+        "skills.trigger_hash",
+        "ALTER TABLE skills ADD COLUMN IF NOT EXISTS trigger_hash CHAR(16)",
+    ),
+    (
+        "skills.trigger_embed_model",
+        "ALTER TABLE skills ADD COLUMN IF NOT EXISTS trigger_embed_model VARCHAR(50)",
+    ),
+    (
+        "skills.routing_threshold",
+        "ALTER TABLE skills ADD COLUMN IF NOT EXISTS routing_threshold FLOAT",
+    ),
+    (
+        "agent_skills.always_load",
+        "ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS always_load BOOLEAN NOT NULL DEFAULT false",
+    ),
+    (
+        "role_skills.always_load",
+        "ALTER TABLE role_skills ADD COLUMN IF NOT EXISTS always_load BOOLEAN NOT NULL DEFAULT false",
+    ),
+    (
+        "agents.skill_routing_enabled",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS skill_routing_enabled BOOLEAN",
+    ),
+    # Legacy column drops — safe because the orchestrator now reads bodies/tools
+    # from the filesystem registry, not these DB fields.
+    (
+        "skills.drop.prompt_fragment",
+        "ALTER TABLE skills DROP COLUMN IF EXISTS prompt_fragment",
+    ),
+    (
+        "skills.drop.required_tool_ids",
+        "ALTER TABLE skills DROP COLUMN IF EXISTS required_tool_ids",
+    ),
+    (
+        "skills.drop.config_schema",
+        "ALTER TABLE skills DROP COLUMN IF EXISTS config_schema",
+    ),
+    (
+        "skills.drop.icon",
+        "ALTER TABLE skills DROP COLUMN IF EXISTS icon",
+    ),
+    (
+        "skills.drop.color",
+        "ALTER TABLE skills DROP COLUMN IF EXISTS color",
+    ),
+    (
+        "skills.drop.version",
+        "ALTER TABLE skills DROP COLUMN IF EXISTS version",
+    ),
+    (
+        "skills.drop.category",
+        "ALTER TABLE skills DROP COLUMN IF EXISTS category",
+    ),
+    (
+        "skills.drop.source",
+        "ALTER TABLE skills DROP COLUMN IF EXISTS source",
+    ),
+    (
+        "skills.drop.created_by_agent_id",
+        "ALTER TABLE skills DROP COLUMN IF EXISTS created_by_agent_id",
+    ),
 ]
 
 
