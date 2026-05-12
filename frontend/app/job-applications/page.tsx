@@ -21,10 +21,14 @@ import {
     Save,
     Users,
     UserCircle,
+    BookOpen,
+    Pencil,
 } from "lucide-react";
 import {
     jobApplicationsApi,
     JOB_APP_STATUSES,
+    envVarsApi,
+    googleDriveApi,
     type JobApplication,
     type JobApplicationReviewEntry,
     type JobApplicationStats,
@@ -354,14 +358,21 @@ function ReviewLoopPanel({
                 <div className="space-y-2">
                     {entries.map((e, i) => {
                         const isBuilder = e.role === "builder";
+                        const isSystem = e.role === "system";
+                        const isCritic = e.role === "critic";
                         const isOpen = expanded === i;
-                        const label = isBuilder ? "Builder" : `Critic`;
+                        const label = isBuilder ? "Builder" : isSystem ? "System" : "Critic";
                         const tone = isBuilder
                             ? "bg-indigo-50 text-indigo-700 border-indigo-200"
-                            : "bg-amber-50 text-amber-700 border-amber-200";
-                        const critic = !isBuilder && typeof e.content === "object" && e.content
+                            : isSystem
+                                ? "bg-rose-50 text-rose-700 border-rose-200"
+                                : "bg-amber-50 text-amber-700 border-amber-200";
+                        const critic = isCritic && typeof e.content === "object" && e.content
                             ? (e.content as Record<string, unknown>)
                             : null;
+                        const systemMsg = isSystem && typeof e.content === "object" && e.content
+                            ? ((e.content as Record<string, unknown>).message as string) || ""
+                            : "";
                         return (
                             <div
                                 key={i}
@@ -388,7 +399,12 @@ function ReviewLoopPanel({
                                         {isOpen ? "hide" : "show"}
                                     </span>
                                 </button>
-                                {isOpen && (
+                                {isSystem && systemMsg && (
+                                    <div className="px-3 pb-3 text-[11px] text-rose-700 border-t border-rose-100 pt-2">
+                                        {systemMsg}
+                                    </div>
+                                )}
+                                {isOpen && !isSystem && (
                                     <div className="px-3 pb-3 border-t border-stone-100">
                                         {critic ? (
                                             <CriticSummary feedback={critic} />
@@ -445,6 +461,199 @@ function CriticSummary({ feedback }: { feedback: Record<string, unknown> }) {
             {section("Missing keywords", feedback.missing_keywords)}
             {section("LaTeX issues", feedback.latex_issues)}
         </div>
+    );
+}
+
+// ─── Master Resume picker ──────────────────────────────────────────────────────
+
+const MASTER_RESUME_ENV_KEY = "MASTER_RESUME_DRIVE_FILE_ID";
+
+interface DriveFileRow {
+    id: string;
+    name: string;
+    mimeType: string;
+    modifiedTime: string;
+}
+
+function MasterResumePicker() {
+    const [fileId, setFileId] = useState<string>("");
+    const [fileName, setFileName] = useState<string>("");
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("resume");
+    const [results, setResults] = useState<DriveFileRow[]>([]);
+    const [searching, setSearching] = useState(false);
+
+    const refresh = useCallback(async () => {
+        try {
+            const items = await envVarsApi.list();
+            const row = items.find((i) => i.key === MASTER_RESUME_ENV_KEY);
+            const id = row?.is_set ? row.masked_value : "";
+            setFileId(id);
+            if (id) {
+                try {
+                    const meta = await googleDriveApi.getFileMetadata(id);
+                    setFileName(meta.name);
+                } catch {
+                    setFileName("(file not found in Drive)");
+                }
+            } else {
+                setFileName("");
+            }
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => { void refresh(); }, [refresh]);
+
+    const runSearch = useCallback(async (q: string) => {
+        setSearching(true);
+        try {
+            const files = await googleDriveApi.searchFiles(q);
+            setResults(files);
+        } catch {
+            setResults([]);
+        } finally {
+            setSearching(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!open) return;
+        const t = setTimeout(() => { void runSearch(query); }, 250);
+        return () => clearTimeout(t);
+    }, [open, query, runSearch]);
+
+    useEffect(() => {
+        if (!open) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [open]);
+
+    async function pick(file: DriveFileRow) {
+        setSaving(true);
+        try {
+            await envVarsApi.upsert([{ key: MASTER_RESUME_ENV_KEY, value: file.id }]);
+            setFileId(file.id);
+            setFileName(file.name);
+            setOpen(false);
+        } catch (e) {
+            console.error(e);
+            alert("Failed to save master resume id — check backend logs.");
+        } finally {
+            setSaving(false);
+        }
+    }
+
+    if (loading) return null;
+
+    const hasFile = !!fileId;
+
+    return (
+        <>
+            <button
+                onClick={() => setOpen(true)}
+                disabled={saving}
+                title={hasFile
+                    ? `Master resume: ${fileName}\nClick to change`
+                    : "Pick your master resume from Google Drive — used as ground truth by the Resume Critic"}
+                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm shadow-sm border transition-colors disabled:opacity-50 ${
+                    hasFile
+                        ? "bg-white border-stone-200 hover:border-indigo-400 text-stone-700"
+                        : "bg-amber-50 border-amber-300 hover:border-amber-400 text-amber-800"
+                }`}
+            >
+                <BookOpen size={14} className={hasFile ? "text-indigo-500" : "text-amber-600"} />
+                <span className="text-[12px] uppercase tracking-wider text-stone-500">Master:</span>
+                <span className="max-w-[200px] truncate font-medium">
+                    {hasFile ? (fileName || fileId) : "Set master resume…"}
+                </span>
+                <Pencil size={12} className="text-stone-400" />
+            </button>
+
+            {open && (
+                <div
+                    className="fixed inset-0 z-50 bg-stone-900/40 flex items-start justify-center p-8"
+                    onClick={() => setOpen(false)}
+                >
+                    <div
+                        className="bg-white rounded-xl shadow-xl border border-stone-200 w-full max-w-xl max-h-[80vh] flex flex-col"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200">
+                            <div className="flex items-center gap-2 text-stone-800">
+                                <BookOpen size={16} className="text-indigo-500" />
+                                <span className="font-medium text-sm">Select your master resume</span>
+                            </div>
+                            <button
+                                onClick={() => setOpen(false)}
+                                className="p-1 rounded-md hover:bg-stone-100 text-stone-500"
+                                aria-label="Close"
+                            >
+                                <X size={16} />
+                            </button>
+                        </div>
+
+                        <div className="px-4 py-3 border-b border-stone-100">
+                            <div className="relative">
+                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+                                <input
+                                    autoFocus
+                                    type="text"
+                                    value={query}
+                                    onChange={(e) => setQuery(e.target.value)}
+                                    placeholder="Search your Google Drive…"
+                                    className="w-full bg-white border border-stone-200 rounded-lg pl-9 pr-3 py-2 text-sm placeholder-stone-400 focus:border-indigo-500 focus:outline-none"
+                                />
+                            </div>
+                            <p className="text-[11px] text-stone-500 mt-2">
+                                Pick the document the Resume Critic should treat as ground truth (Google Doc, .md, or .txt).
+                            </p>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto px-2 py-2">
+                            {searching && (
+                                <div className="text-[11px] text-stone-500 text-center py-4">Searching…</div>
+                            )}
+                            {!searching && results.length === 0 && (
+                                <div className="text-[11px] text-stone-400 text-center py-6">
+                                    No matching files. Try a different search term.
+                                </div>
+                            )}
+                            {results.map((f) => {
+                                const isSelected = f.id === fileId;
+                                return (
+                                    <button
+                                        key={f.id}
+                                        onClick={() => pick(f)}
+                                        disabled={saving}
+                                        className={`w-full text-left px-3 py-2 rounded-lg flex items-start gap-2 transition-colors ${
+                                            isSelected
+                                                ? "bg-indigo-50 border border-indigo-200"
+                                                : "hover:bg-stone-50 border border-transparent"
+                                        }`}
+                                    >
+                                        <FileText size={14} className="text-stone-400 mt-0.5 shrink-0" />
+                                        <div className="min-w-0 flex-1">
+                                            <div className="text-sm text-stone-800 truncate">{f.name}</div>
+                                            <div className="text-[11px] text-stone-500">
+                                                {f.mimeType.split(".").pop()} · {timeAgo(f.modifiedTime)}
+                                            </div>
+                                        </div>
+                                        {isSelected && (
+                                            <span className="text-[10px] text-indigo-600 self-center">current</span>
+                                        )}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
     );
 }
 
@@ -744,12 +953,15 @@ export default function JobApplicationsPage() {
                         </p>
                     </div>
                     {tab === "pipeline" && (
-                        <button
-                            onClick={load}
-                            className="inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-stone-200 hover:border-stone-300 rounded-lg text-sm text-stone-700 shadow-sm"
-                        >
-                            <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
-                        </button>
+                        <div className="flex items-center gap-2">
+                            <MasterResumePicker />
+                            <button
+                                onClick={load}
+                                className="inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-stone-200 hover:border-stone-300 rounded-lg text-sm text-stone-700 shadow-sm"
+                            >
+                                <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
+                            </button>
+                        </div>
                     )}
                 </div>
 

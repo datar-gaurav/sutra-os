@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
 
+    # Drive file ID of the candidate's master resume — used as ground truth
+    # by the Resume Critic in the review loop. Can also be set via env var
+    # MASTER_RESUME_DRIVE_FILE_ID or through Settings UI.
+    master_resume_drive_file_id: str = ""
+
     # GitHub Integration
     github_token: str | None = None
 

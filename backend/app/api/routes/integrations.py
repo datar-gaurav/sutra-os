@@ -330,3 +330,22 @@ async def get_google_drive_picker_token(agent_id: str | None = None):
     except Exception as e:
         logger.warning(f"Google Drive picker token failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/google-drive/file/{file_id}")
+async def get_google_drive_file_metadata(file_id: str, agent_id: str | None = None):
+    """Return basic metadata for a single Drive file by id."""
+    try:
+        from app.tools.google_drive_tools import _get_drive_credentials
+        from googleapiclient.discovery import build
+
+        creds = await _get_drive_credentials(agent_id=agent_id)
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        meta = service.files().get(
+            fileId=file_id,
+            fields="id, name, mimeType, modifiedTime, webViewLink",
+        ).execute()
+        return meta
+    except Exception as e:
+        logger.warning(f"Google Drive file metadata fetch failed: {e}")
+        raise HTTPException(status_code=404, detail=str(e))

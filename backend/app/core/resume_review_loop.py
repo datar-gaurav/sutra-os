@@ -20,12 +20,15 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from io import BytesIO
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import select
 
+from app.config import settings
 from app.core.agent_manager import agent_manager
 from app.core.callbacks import UsageCallbackHandler
+from app.core.env_utils import get_config
 from app.core.llm_registry import llm_registry
 from app.db.session import async_session_factory
 from app.models.agent import Agent
@@ -195,26 +198,106 @@ def _build_review_prompt(jd: str, master_resume: str, draft: str, prior_rounds: 
     )
 
 
-_TEX_RE = re.compile(
-    r"<<<RESUME_(?:MD|TEX)_BEGIN>>>(.*?)<<<RESUME_(?:MD|TEX)_END>>>", re.DOTALL
-)
-_MASTER_RE = re.compile(
-    r"<<<MASTER_(?:MD|TEX)_BEGIN>>>(.*?)<<<MASTER_(?:MD|TEX)_END>>>", re.DOTALL
-)
+async def _read_drive_file(agent_id: str, file_id: str) -> str:
+    """Fetch a Drive file's text content using the agent's Google integration.
+
+    Mirrors `gdrive_read_file` but raises on failure so callers can surface a
+    clear error in the review log instead of silently skipping rounds.
+    """
+    from googleapiclient.http import MediaIoBaseDownload
+
+    from app.tools.google_drive_tools import (
+        _EXPORT_MIME_MAP,
+        _MAX_FILE_SIZE,
+        _build_service,
+    )
+
+    service = await _build_service(agent_id, "drive", "v3")
+    meta = service.files().get(
+        fileId=file_id,
+        fields="id, name, mimeType, size",
+    ).execute()
+    mime = meta.get("mimeType", "")
+    name = meta.get("name", file_id)
+
+    if mime in _EXPORT_MIME_MAP:
+        export_mime, _ = _EXPORT_MIME_MAP[mime]
+        content_bytes = service.files().export_media(
+            fileId=file_id, mimeType=export_mime
+        ).execute()
+        return content_bytes.decode("utf-8", errors="replace")
+
+    size = int(meta.get("size", 0))
+    if size > _MAX_FILE_SIZE:
+        raise ValueError(
+            f"File '{name}' ({size // 1024 // 1024}MB) exceeds the 10MB read limit"
+        )
+    if not mime.startswith("text/") and mime != "application/octet-stream":
+        raise ValueError(
+            f"File '{name}' is binary ({mime}) and cannot be read as text"
+        )
+
+    buf = BytesIO()
+    downloader = MediaIoBaseDownload(buf, service.files().get_media(fileId=file_id))
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buf.getvalue().decode("utf-8", errors="replace")
 
 
-def _extract_tailored_tex(builder_output: str) -> str:
-    m = _TEX_RE.search(builder_output or "")
-    return m.group(1).strip() if m else ""
+async def _append_log_entry(application_id: str, entry: dict, log: list[dict]) -> None:
+    """Append an entry to the in-memory log and persist the row."""
+    log.append(entry)
+    async with async_session_factory() as db:
+        row = await db.get(JobApplication, application_id)
+        if row:
+            row.review_log = list(log)
+            await db.commit()
 
 
-def _extract_master_tex(builder_output: str) -> str:
-    m = _MASTER_RE.search(builder_output or "")
-    return m.group(1).strip() if m else ""
+async def _write_system_error(application_id: str, round_num: int, message: str) -> None:
+    """Persist a system error entry without requiring an in-memory log list.
+
+    Used by failure paths that abort before the main loop builds its log,
+    so users see a clear error in the UI instead of nothing.
+    """
+    entry = _system_error(round_num, message)
+    async with async_session_factory() as db:
+        row = await db.get(JobApplication, application_id)
+        if row:
+            row.review_log = list(row.review_log or []) + [entry]
+            await db.commit()
+
+
+def _system_error(round_num: int, message: str) -> dict:
+    return {
+        "round": round_num,
+        "role": "system",
+        "agent": "review_loop",
+        "content": {"status": "error", "message": message},
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 async def run_resume_review_loop(application_id: str, payload: dict) -> dict:
-    """Run the full build → review → revise loop for one application."""
+    """Run the full build → review → revise loop for one application.
+
+    Surfaces every failure mode as a `role: "system"` entry in review_log so
+    the UI shows a clear reason whenever the loop stops, instead of silently
+    leaving the user with an empty log.
+    """
+    try:
+        return await _run_review_loop_inner(application_id, payload)
+    except Exception as e:
+        logger.exception("Resume review loop crashed for %s", application_id)
+        await _write_system_error(
+            application_id, 0,
+            f"Review loop crashed: {type(e).__name__}: {e}",
+        )
+        return {"error": str(e)}
+
+
+async def _run_review_loop_inner(application_id: str, payload: dict) -> dict:
     from app.core.orchestrator import orchestrator
 
     async with async_session_factory() as db:
@@ -230,81 +313,126 @@ async def run_resume_review_loop(application_id: str, payload: dict) -> dict:
     # Resolve agents
     builder = await _get_agent_by_name(BUILDER_NAME)
     if not builder:
+        await _write_system_error(application_id, 0, (
+            f"Review loop skipped: agent '{BUILDER_NAME}' not seeded. "
+            "Re-run the agent seeder or create it manually in Settings → Agents."
+        ))
         return {"error": f"'{BUILDER_NAME}' agent not seeded"}
-    await _ensure_running(builder)
+
+    try:
+        await _ensure_running(builder)
+    except Exception as e:
+        await _write_system_error(application_id, 0, (
+            f"Review loop skipped: could not start '{BUILDER_NAME}' agent ({e}). "
+            "Check the agent's LLM provider/model configuration."
+        ))
+        raise
 
     critic = None
     if max_rounds > 0:
         critic_name = _pick_critic_name(jd)
         critic = await _get_agent_by_name(critic_name)
         if not critic:
-            logger.warning(f"Critic {critic_name} not seeded — skipping review loop")
+            await _write_system_error(application_id, 0, (
+                f"Critic '{critic_name}' is not seeded — running builder only "
+                "(no review rounds)."
+            ))
             max_rounds = 0
 
     # Step 1: initial build
     initial_prompt = _build_initial_prompt({**payload, "application_id": application_id})
-    result = await orchestrator.route_message(
-        agent_id=builder.id,
-        message=initial_prompt,
-        chat_history=[],
-    )
-    review_log.append({
+    try:
+        result = await orchestrator.route_message(
+            agent_id=builder.id,
+            message=initial_prompt,
+            chat_history=[],
+        )
+    except Exception as e:
+        await _write_system_error(application_id, 0, (
+            f"Builder run failed: {type(e).__name__}: {e}"
+        ))
+        raise
+
+    builder_output = result.get("output", "")
+    await _append_log_entry(application_id, {
         "round": 0,
         "role": "builder",
         "agent": builder.name,
-        "content": result.get("output", ""),
+        "content": builder_output,
         "ts": datetime.now(timezone.utc).isoformat(),
-    })
+    }, review_log)
 
-    # Persist the initial build log
-    async with async_session_factory() as db:
-        row = await db.get(JobApplication, application_id)
-        if row:
-            row.review_log = list(review_log)
-            await db.commit()
-
-    builder_output = result.get("output", "")
     if max_rounds == 0 or not critic:
         return {"rounds": 0, "final_output": builder_output}
 
-    master_resume = _extract_master_tex(builder_output)
-    current_draft = _extract_tailored_tex(builder_output)
-    if not current_draft:
-        logger.warning("Builder did not include tailored tex sentinels — skipping review")
+    # Read tailored draft + master resume from Drive (canonical sources written
+    # by the builder), not from the conversational reply. The builder records
+    # the Drive file id via update_job_application; the master is configured
+    # globally via MASTER_RESUME_DRIVE_FILE_ID.
+    async with async_session_factory() as db:
+        row = await db.get(JobApplication, application_id)
+        tailored_file_id = row.resume_drive_file_id if row else None
+
+    master_file_id = get_config(
+        "MASTER_RESUME_DRIVE_FILE_ID", settings.master_resume_drive_file_id
+    )
+
+    if not tailored_file_id:
+        await _append_log_entry(application_id, _system_error(
+            0,
+            "Review loop skipped: builder did not record a Drive file id for the "
+            "tailored resume (resume_drive_file_id is empty). Ensure the builder "
+            "calls update_job_application with resume_drive_file_id after upload.",
+        ), review_log)
+        return {"rounds": 0, "final_output": builder_output}
+
+    if not master_file_id:
+        await _append_log_entry(application_id, _system_error(
+            0,
+            "Review loop skipped: MASTER_RESUME_DRIVE_FILE_ID is not configured. "
+            "Set the Drive file id of your master resume via Settings → Env Vars "
+            "(or the .env file) so the critic has a ground-truth comparison.",
+        ), review_log)
+        return {"rounds": 0, "final_output": builder_output}
+
+    try:
+        master_resume = await _read_drive_file(builder.id, master_file_id)
+    except Exception as e:
+        await _append_log_entry(application_id, _system_error(
+            0, f"Review loop skipped: failed to read master resume from Drive ({e})",
+        ), review_log)
+        return {"rounds": 0, "final_output": builder_output}
+
+    try:
+        current_draft = await _read_drive_file(builder.id, tailored_file_id)
+    except Exception as e:
+        await _append_log_entry(application_id, _system_error(
+            0, f"Review loop skipped: failed to read tailored resume from Drive ({e})",
+        ), review_log)
         return {"rounds": 0, "final_output": builder_output}
 
     # Step 2-N: critique → revise loop
     final_output = builder_output
     for round_num in range(1, max_rounds + 1):
-        draft = current_draft
-        if not draft:
-            logger.warning("Skipping review round — no draft available")
-            break
-
         await _ensure_running(critic)
         review_prompt = _build_review_prompt(
-            jd, master_resume, draft,
+            jd, master_resume, current_draft,
             [r for r in review_log if r.get("role") == "critic"],
         )
         feedback = await _invoke_critic(critic, review_prompt)
-        review_log.append({
+        await _append_log_entry(application_id, {
             "round": round_num,
             "role": "critic",
             "agent": critic.name,
             "content": feedback,
             "ts": datetime.now(timezone.utc).isoformat(),
-        })
+        }, review_log)
 
         if feedback.get("status") == "approved":
             logger.info(f"Critic approved resume at round {round_num}; stopping early")
-            async with async_session_factory() as db:
-                row = await db.get(JobApplication, application_id)
-                if row:
-                    row.review_log = list(review_log)
-                    await db.commit()
             break
 
-        # Builder revises
+        # Builder revises in-place on Drive (same file id)
         revision_prompt = _format_feedback_for_builder(feedback, round_num, max_rounds)
         revision_result = await orchestrator.route_message(
             agent_id=builder.id,
@@ -312,21 +440,22 @@ async def run_resume_review_loop(application_id: str, payload: dict) -> dict:
             chat_history=[],
         )
         final_output = revision_result.get("output", "")
-        revised_draft = _extract_tailored_tex(final_output)
-        if revised_draft:
-            current_draft = revised_draft
-        review_log.append({
+        await _append_log_entry(application_id, {
             "round": round_num,
             "role": "builder",
             "agent": builder.name,
             "content": final_output,
             "ts": datetime.now(timezone.utc).isoformat(),
-        })
+        }, review_log)
 
-        async with async_session_factory() as db:
-            row = await db.get(JobApplication, application_id)
-            if row:
-                row.review_log = list(review_log)
-                await db.commit()
+        try:
+            current_draft = await _read_drive_file(builder.id, tailored_file_id)
+        except Exception as e:
+            await _append_log_entry(application_id, _system_error(
+                round_num,
+                f"Could not re-read tailored resume from Drive after revision ({e}); "
+                "stopping review loop.",
+            ), review_log)
+            break
 
     return {"rounds": max_rounds, "final_output": final_output}

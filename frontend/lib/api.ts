@@ -2368,9 +2368,9 @@ export interface JobApplication {
 
 export interface JobApplicationReviewEntry {
     round: number;
-    role: "builder" | "critic";
+    role: "builder" | "critic" | "system";
     agent: string;
-    content: unknown; // string (builder) or structured JSON (critic)
+    content: unknown; // string (builder), structured JSON (critic), or {status, message} (system)
     ts: string;
 }
 
@@ -2650,6 +2650,14 @@ export const googleDriveApi = {
         const params = agent_id ? `?agent_id=${encodeURIComponent(agent_id)}` : "";
         return apiFetch<{ access_token: string; client_id: string; api_key: string }>(
             `/api/integrations/google-drive/picker-token${params}`
+        );
+    },
+
+    /** Fetch metadata (name, mimeType, link) for one Drive file by id. */
+    getFileMetadata: (file_id: string, agent_id?: string) => {
+        const params = agent_id ? `?agent_id=${encodeURIComponent(agent_id)}` : "";
+        return apiFetch<{ id: string; name: string; mimeType: string; modifiedTime: string; webViewLink: string }>(
+            `/api/integrations/google-drive/file/${encodeURIComponent(file_id)}${params}`
         );
     },
 };
