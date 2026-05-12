@@ -250,6 +250,14 @@ ENV_VAR_SCHEMA: list[dict[str, Any]] = [
         "description": "Comma-separated absolute paths agents may read/write",
         "placeholder": "/home/user/projects",
     },
+
+    # ── Resume Builder ─────────────────────────────────────────────────────
+    {
+        "key": "MASTER_RESUME_DRIVE_FILE_ID", "group": "Resume Builder",
+        "label": "Master Resume Drive File ID", "is_secret": False,
+        "description": "Drive file id of your master resume. Used as ground truth by the Resume Critic. Easiest set via the picker on the Job Applications page.",
+        "placeholder": "1A2B3c...",
+    },
 ]
 
 # Build a fast lookup map
