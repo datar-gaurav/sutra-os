@@ -46,6 +46,89 @@ function relativeTime(iso: string): string {
 }
 
 
+// ─── First-time setup help (Gemini OAuth) ────────────────────────────────────
+
+function SetupHelp({ health }: { health: FleetWorkerHealth | null }) {
+    const missingCreds = !!health?.online && health.auth_ready === false;
+    const [open, setOpen] = useState(missingCreds);
+    useEffect(() => { if (missingCreds) setOpen(true); }, [missingCreds]);
+
+    if (!health) return null;
+    const home = health.gemini_home || "~/.gemini-fleet-home";
+
+    const tone = missingCreds
+        ? "border-amber-300 bg-amber-50"
+        : "border-stone-200 bg-stone-50";
+    const heading = missingCreds
+        ? "Finish setup — Gemini OAuth missing"
+        : "First-time setup help";
+    const intro = missingCreds
+        ? "The worker is online but cannot reach Gemini until you complete OAuth into its sandboxed HOME. Run the steps below once on this Mac."
+        : "Already working — keep this around in case you ever rotate creds or set up a new host.";
+
+    return (
+        <div className={`border rounded-lg p-4 ${tone}`}>
+            <button
+                onClick={() => setOpen(o => !o)}
+                className="w-full flex items-center justify-between text-left"
+            >
+                <div>
+                    <h2 className="text-sm font-semibold">{heading}</h2>
+                    <p className="text-xs text-stone-600 mt-0.5">{intro}</p>
+                </div>
+                <span className="text-stone-500 text-sm">{open ? "▾" : "▸"}</span>
+            </button>
+
+            {open && (
+                <div className="mt-3 space-y-3 text-sm text-stone-700">
+                    <ol className="list-decimal list-inside space-y-2">
+                        <li>
+                            In a terminal on the host (this Mac), run Gemini with HOME redirected to the fleet sandbox:
+                            <CodeBlock>{`HOME=${home} gemini`}</CodeBlock>
+                        </li>
+                        <li>
+                            Pick <span className="font-mono bg-white border border-stone-200 px-1 rounded">Login with Google</span> in the auth picker. Complete the browser flow.
+                        </li>
+                        <li>
+                            Back in the terminal, type <span className="font-mono bg-white border border-stone-200 px-1 rounded">/quit</span> to exit. OAuth is saved.
+                        </li>
+                        <li>
+                            Verify the creds file landed in the right place:
+                            <CodeBlock>{`ls ${home}/.gemini/oauth_creds.json`}</CodeBlock>
+                        </li>
+                        <li>
+                            <span className="text-stone-500">(Optional, only if you also use a personal Gemini API key in <span className="font-mono">~/.env</span>):</span> the worker passes a scrubbed env to Gemini, so stray <span className="font-mono">GEMINI_API_KEY</span> / <span className="font-mono">GOOGLE_GENAI_USE_*</span> in your shell rc won't leak in — but if Gemini auto-loads a <span className="font-mono">.env</span> walking up from the workspace, it can. Keep <span className="font-mono">~/.env</span> clean of those vars.
+                        </li>
+                    </ol>
+                    <p className="text-xs text-stone-500">
+                        The worker re-reads OAuth creds on every job — no restart needed after step 4.
+                    </p>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function CodeBlock({ children }: { children: string }) {
+    const [copied, setCopied] = useState(false);
+    return (
+        <div className="relative mt-1.5">
+            <pre className="bg-stone-900 text-stone-100 rounded px-3 py-2 text-xs font-mono overflow-x-auto">{children}</pre>
+            <button
+                onClick={() => {
+                    navigator.clipboard.writeText(children);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1200);
+                }}
+                className="absolute top-1.5 right-1.5 text-xs text-stone-400 hover:text-stone-100 bg-stone-800 px-2 py-0.5 rounded"
+            >
+                {copied ? "Copied" : "Copy"}
+            </button>
+        </div>
+    );
+}
+
+
 // ─── Repos config (FLEET_REPOS) ──────────────────────────────────────────────
 
 function RepoConfig() {
@@ -469,6 +552,7 @@ export default function FleetPage() {
                 />
             )}
 
+            <SetupHelp health={health} />
             <RepoConfig />
 
             {loading && jobs.length === 0 ? (
