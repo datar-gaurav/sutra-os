@@ -763,6 +763,40 @@ async def run_alert_evaluation():
         print(f"[Scheduler] Alert evaluation failed: {e}")
 
 
+async def run_fleet_triage():
+    """Scheduled job: run one fleet triage pass.
+
+    `triage_and_enqueue` itself short-circuits if a non-terminal job already
+    exists, so this is safe to call hourly.
+    """
+    from app.core.fleet_orchestrator import triage_and_enqueue
+
+    try:
+        async with async_session_factory() as db:
+            job = await triage_and_enqueue(db)
+        if job:
+            print(f"[Scheduler] Fleet triage: enqueued {job.id} → {job.repo_url} {job.issue_ref}")
+    except Exception as e:
+        print(f"[Scheduler] Fleet triage failed: {e}")
+
+
+async def run_fleet_watchdog():
+    """Scheduled job: poke the host worker if anything looks stuck.
+
+    Cheap — usually no-ops because dispatch happens at enqueue time. Only
+    matters when the host worker was offline at enqueue or crashed mid-job.
+    """
+    from app.core.fleet_dispatcher import watchdog_tick
+
+    try:
+        async with async_session_factory() as db:
+            stats = await watchdog_tick(db)
+        if stats["kicked_queued"] or stats["revived_claimed"]:
+            print(f"[Scheduler] Fleet watchdog: {stats}")
+    except Exception as e:
+        print(f"[Scheduler] Fleet watchdog failed: {e}")
+
+
 async def run_forge_queue():
     """Scheduled job: process the Forge request queue one request at a time.
 
@@ -1055,3 +1089,38 @@ def start_scheduler():
                     replace_existing=True,
                 )
                 print(f"[Scheduler] Forge queue runner scheduled: {settings.forge_queue_cron} (America/Los_Angeles)")
+
+            # Fleet triage runner — picks an issue across fleet_repos and enqueues
+            # it, but ONLY when there is no in-flight job. Host worker drains it.
+            fleet_cron_parts = settings.fleet_triage_cron.split()
+            if len(fleet_cron_parts) == 5 and (settings.fleet_repos or "").strip():
+                scheduler.add_job(
+                    run_fleet_triage,
+                    trigger=CronTrigger(
+                        minute=fleet_cron_parts[0],
+                        hour=fleet_cron_parts[1],
+                        day=fleet_cron_parts[2],
+                        month=fleet_cron_parts[3],
+                        day_of_week=fleet_cron_parts[4],
+                    ),
+                    id="fleet_triage_runner",
+                    replace_existing=True,
+                )
+                print(f"[Scheduler] Fleet triage runner scheduled: {settings.fleet_triage_cron}")
+
+            # Fleet watchdog — pokes the host worker for any queued/stuck jobs
+            watchdog_parts = settings.fleet_watchdog_cron.split()
+            if len(watchdog_parts) == 5 and (settings.fleet_worker_token or "").strip():
+                scheduler.add_job(
+                    run_fleet_watchdog,
+                    trigger=CronTrigger(
+                        minute=watchdog_parts[0],
+                        hour=watchdog_parts[1],
+                        day=watchdog_parts[2],
+                        month=watchdog_parts[3],
+                        day_of_week=watchdog_parts[4],
+                    ),
+                    id="fleet_watchdog",
+                    replace_existing=True,
+                )
+                print(f"[Scheduler] Fleet watchdog scheduled: {settings.fleet_watchdog_cron}")

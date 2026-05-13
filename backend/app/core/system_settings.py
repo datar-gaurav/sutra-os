@@ -162,6 +162,12 @@ SETTINGS_SCHEMA: dict[str, dict] = {
         "description": "Comma-separated GitHub repos to monitor (e.g. 'owner/repo,owner2/repo2')",
     },
 
+    # ── Fleet ────────────────────────────────────────────────────────────────
+    "fleet_repos": {
+        "type": "str", "group": "Fleet", "label": "Fleet Repos",
+        "description": "Comma-separated 'owner/repo' list the hourly triage walks for candidate issues",
+    },
+
     # ── Rate Limits ─────────────────────────────────────────────────────────
     "rate_limit_chat": {
         "type": "str", "group": "Rate Limits", "label": "Chat Rate Limit",

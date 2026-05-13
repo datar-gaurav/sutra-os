@@ -191,6 +191,117 @@ fi
 
 echo ""
 
+# ── 4c. Sutra Fleet (cross-repo automation) ─────
+
+info "Configuring Sutra Fleet (Gemini-CLI host worker)..."
+echo "    Fleet automates fixes across multiple repos: a Gemini CLI daemon"
+echo "    runs on the host (KeepAlive via launchd) listening on 127.0.0.1:7476."
+echo "    Sutra triggers it the instant a job is enqueued; a watchdog cron"
+echo "    inside sutra re-pokes anything that got stuck."
+echo ""
+
+read -rp "$(echo -e ${BOLD}Enable Sutra Fleet on this host?${RESET}) [y/N] " enable_fleet
+
+if [[ "$enable_fleet" =~ ^[Yy]$ ]]; then
+    # Token — generate once, reuse on subsequent installs
+    EXISTING_FLEET_TOKEN=$(grep "^FLEET_WORKER_TOKEN=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    if [ -z "$EXISTING_FLEET_TOKEN" ]; then
+        FLEET_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))" 2>/dev/null || true)
+        if [ -z "$FLEET_TOKEN" ]; then
+            fail "Could not generate FLEET_WORKER_TOKEN — install python3 and retry."
+        fi
+        set_env "FLEET_WORKER_TOKEN" "$FLEET_TOKEN"
+        ok "Generated FLEET_WORKER_TOKEN"
+    else
+        FLEET_TOKEN="$EXISTING_FLEET_TOKEN"
+        ok "FLEET_WORKER_TOKEN already set — reusing"
+    fi
+
+    # Optional: fleet repos list (comma-separated owner/repo)
+    EXISTING_FLEET_REPOS=$(grep "^FLEET_REPOS=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    if [ -z "$EXISTING_FLEET_REPOS" ]; then
+        ask "Enter comma-separated repos to triage (e.g. me/proj-a,me/proj-b):"
+        read -rp "   (blank to skip and set in Settings UI later): " FLEET_REPOS
+        if [ -n "$FLEET_REPOS" ]; then
+            set_env "FLEET_REPOS" "$FLEET_REPOS"
+            ok "Set FLEET_REPOS=${FLEET_REPOS}"
+        else
+            warn "FLEET_REPOS empty — triage scheduler will no-op until you set it."
+        fi
+    else
+        ok "FLEET_REPOS already set: ${EXISTING_FLEET_REPOS}"
+    fi
+
+    # Need GITHUB_TOKEN — already required for the rest of sutra, but check
+    GH_TOKEN_VAL=$(grep "^GITHUB_TOKEN=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    if [ -z "$GH_TOKEN_VAL" ]; then
+        # Try gh's stored token as a fallback
+        if command -v gh &>/dev/null && gh auth status &>/dev/null; then
+            GH_TOKEN_VAL=$(gh auth token 2>/dev/null || true)
+            if [ -n "$GH_TOKEN_VAL" ]; then
+                set_env "GITHUB_TOKEN" "$GH_TOKEN_VAL"
+                ok "Pulled GITHUB_TOKEN from gh CLI keychain"
+            fi
+        fi
+    fi
+    if [ -z "$GH_TOKEN_VAL" ]; then
+        warn "GITHUB_TOKEN not set — fleet worker can't clone/push. Set it in backend/.env or run 'gh auth login' before loading the worker."
+    fi
+
+    # Host-side dirs
+    mkdir -p "$HOME/agent_workspaces"
+    ok "Created $HOME/agent_workspaces"
+    mkdir -p "$HOME/.gemini-fleet-home"
+    ok "Created $HOME/.gemini-fleet-home (isolated HOME for Gemini CLI)"
+    mkdir -p "$HOME/Library/Logs"
+
+    # Render the launchd plist
+    PLIST_TEMPLATE="$PROJECT_DIR/scripts/com.sutra.fleet-worker.plist"
+    PLIST_DEST="$HOME/Library/LaunchAgents/com.sutra.fleet-worker.plist"
+    if [ ! -f "$PLIST_TEMPLATE" ]; then
+        warn "plist template missing at $PLIST_TEMPLATE — skipping launchd setup."
+    else
+        mkdir -p "$HOME/Library/LaunchAgents"
+        HOSTNAME_SHORT=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
+        # Escape sed delimiters in substituted values (token is base64-urlsafe; safe)
+        sed \
+            -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
+            -e "s|__HOME__|$HOME|g" \
+            -e "s|__HOSTNAME__|$HOSTNAME_SHORT|g" \
+            -e "s|__FLEET_WORKER_TOKEN__|$FLEET_TOKEN|g" \
+            -e "s|__GITHUB_TOKEN__|${GH_TOKEN_VAL:-CHANGE_ME}|g" \
+            "$PLIST_TEMPLATE" > "$PLIST_DEST"
+        chmod 600 "$PLIST_DEST"   # contains the GH + fleet tokens
+        ok "Wrote $PLIST_DEST"
+
+        # Check Gemini OAuth has been seated in the isolated HOME
+        if [ ! -f "$HOME/.gemini-fleet-home/.gemini/oauth_creds.json" ]; then
+            warn "Gemini OAuth not yet set up in fleet HOME."
+            info "Run once before loading the worker:"
+            echo "      HOME=$HOME/.gemini-fleet-home gemini auth login"
+        else
+            ok "Gemini OAuth present in fleet HOME"
+        fi
+
+        # Offer to load it — don't force, as the user may want to inspect first
+        read -rp "$(echo -e ${BOLD}Load the launchd agent now?${RESET}) [y/N] " load_now
+        if [[ "$load_now" =~ ^[Yy]$ ]]; then
+            launchctl unload "$PLIST_DEST" 2>/dev/null || true
+            if launchctl load "$PLIST_DEST"; then
+                ok "Loaded com.sutra.fleet-worker (daemon on 127.0.0.1:7476)"
+            else
+                warn "launchctl load failed — load manually after fixing: launchctl load $PLIST_DEST"
+            fi
+        else
+            info "Load later with: launchctl load $PLIST_DEST"
+        fi
+    fi
+else
+    info "Skipped fleet setup — re-run ./install.sh to enable later."
+fi
+
+echo ""
+
 # ── 5. Build & start services ────────────────────
 
 echo -e "${BOLD}Building Docker images (this may take a few minutes the first time)...${RESET}"

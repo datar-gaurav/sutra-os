@@ -2154,6 +2154,75 @@ export const forgeApi = {
 };
 
 
+// ─── Fleet ───────────────────────────────────────────────────────────────────
+
+export type FleetStatus =
+    | "queued"
+    | "claimed"
+    | "running"
+    | "pushing"
+    | "pr_created"
+    | "failed"
+    | "cancelled";
+
+export interface FleetLogLine {
+    timestamp: string;
+    stream: "stdout" | "stderr" | "event";
+    line: string;
+}
+
+export interface FleetDecision {
+    timestamp: string;
+    decision: string;
+    detail: string;
+}
+
+export interface FleetJob {
+    id: string;
+    repo_url: string;
+    issue_ref: string | null;
+    title: string;
+    prompt: string;
+    branch_name: string | null;
+    status: FleetStatus;
+    triage: { reason?: string; candidate_count?: number; model?: string } | null;
+    decisions: FleetDecision[] | null;
+    run_log: FleetLogLine[] | null;
+    claimed_by: string | null;
+    claimed_at: string | null;
+    pr_url: string | null;
+    pr_number: number | null;
+    error_log: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface FleetWorkerHealth {
+    online: boolean;
+    busy?: boolean;
+    version?: string;
+    worker_id?: string;
+    error?: string;
+}
+
+export const fleetApi = {
+    list: (status?: FleetStatus) => {
+        const qs = status ? `?status=${status}` : "";
+        return apiFetch<FleetJob[]>(`/api/fleet/${qs}`);
+    },
+    get: (id: string) => apiFetch<FleetJob>(`/api/fleet/${id}`),
+    create: (data: { repo_url: string; prompt: string; title?: string; issue_ref?: string }) =>
+        apiFetch<FleetJob>("/api/fleet/", { method: "POST", body: JSON.stringify(data) }),
+    triage: () => apiFetch<FleetJob | null>("/api/fleet/triage", { method: "POST" }),
+    cancel: (id: string) =>
+        apiFetch<FleetJob>(`/api/fleet/${id}/cancel`, { method: "POST" }),
+    remove: (id: string) =>
+        apiFetch<{ ok: boolean }>(`/api/fleet/${id}`, { method: "DELETE" }),
+    workerHealth: () => apiFetch<FleetWorkerHealth>("/api/fleet/worker-health"),
+    dispatch: () => apiFetch<{ dispatched: boolean }>("/api/fleet/dispatch", { method: "POST" }),
+};
+
+
 // ─── API Key Management ───────────────────────────────────────────────────────
 
 export interface ApiKey {

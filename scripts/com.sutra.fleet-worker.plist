@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sutra Fleet — host worker launchd agent.
+
+  This is a TEMPLATE. install.sh renders it into ~/Library/LaunchAgents/
+  with real values substituted for the __VAR__ markers. Do not load this
+  file directly — load the rendered copy.
+
+  After install:
+    launchctl list | grep sutra              # verify
+    tail -f ~/Library/Logs/sutra-fleet.log   # watch runs
+
+  Re-render after changing token/paths: re-run ./install.sh
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sutra.fleet-worker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>__PROJECT_DIR__/scripts/fleet_worker.py</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SUTRA_URL</key>
+    <string>http://localhost:8000</string>
+
+    <key>FLEET_WORKER_TOKEN</key>
+    <string>__FLEET_WORKER_TOKEN__</string>
+
+    <key>FLEET_WORKER_ID</key>
+    <string>__HOSTNAME__</string>
+
+    <key>GITHUB_TOKEN</key>
+    <string>__GITHUB_TOKEN__</string>
+
+    <key>FLEET_WORKSPACE_ROOT</key>
+    <string>__HOME__/agent_workspaces</string>
+
+    <key>GEMINI_HOME</key>
+    <string>__HOME__/.gemini-fleet-home</string>
+
+    <key>FLEET_GEMINI_MODEL</key>
+    <string>gemini-2.5-pro</string>
+
+    <key>FLEET_WORKER_PORT</key>
+    <string>7476</string>
+
+    <key>FLEET_RUN_TIMEOUT_SEC</key>
+    <string>1800</string>
+
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/sutra-fleet.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/sutra-fleet.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>Nice</key>
+  <integer>5</integer>
+</dict>
+</plist>

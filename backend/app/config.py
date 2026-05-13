@@ -115,6 +115,26 @@ class Settings(BaseSettings):
     # Default: 7:00 PM Pacific every day  →  "0 19 * * *"
     forge_queue_cron: str = "0 19 * * *"
 
+    # Fleet — multi-repo orchestrator. Sutra triages + queues; a host-side
+    # worker (outside Docker, so it can use Gemini CLI's OAuth at ~/.gemini/)
+    # claims jobs, runs Gemini CLI with macOS Seatbelt sandbox, pushes the
+    # branch, and opens a PR. The worker auths via fleet_worker_token.
+    fleet_repos: str = ""                              # comma-separated "owner/repo" list to triage
+    fleet_max_concurrent: int = 1                       # server-side cap; host adds its own flock
+    fleet_workspace_root: str = "~/agent_workspaces"    # host path; the worker expands ~
+    fleet_worker_token: str = ""                        # shared secret the host worker presents
+    fleet_triage_provider: str = "google"               # llm_registry provider for triage
+    fleet_triage_model: str = "gemini-2.5-flash"        # cheap+fast triage model
+    fleet_gemini_model: str = "gemini-2.5-pro"          # model the host-worker invokes
+    fleet_triage_cron: str = "0 */1 * * *"              # hourly; only enqueues when queue is empty
+    # Host worker is a long-running daemon on 127.0.0.1:<port>. Sutra (in Docker)
+    # reaches it via host.docker.internal. Dispatch is event-driven (fired the
+    # moment a job is enqueued) with a watchdog cron that picks up any stuck
+    # queued jobs in case the host was offline.
+    fleet_worker_url: str = "http://host.docker.internal:7476"
+    fleet_watchdog_cron: str = "*/15 * * * *"           # every 15 min
+    fleet_dispatch_timeout_sec: float = 5.0             # how long to wait on /run
+
     # Social Pulse — trending content research
     social_pulse_cron: str = "*/30 * * * *"  # every 30 min
     social_pulse_default_subreddits: str = "technology,programming,business,marketing,worldnews"

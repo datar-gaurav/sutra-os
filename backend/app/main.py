@@ -24,6 +24,7 @@ from app.api.routes import webhooks as webhooks_routes
 from app.api.routes import skills as skills_routes
 from app.api.routes import integrations as integrations_routes
 from app.api.routes import forge as forge_routes
+from app.api.routes import fleet as fleet_routes
 from app.api.routes import evolve as evolve_routes
 from app.api.routes import alerts as alerts_routes
 from app.api.routes import social_pulse as social_pulse_routes
@@ -72,6 +73,7 @@ import app.models.webhook  # ensure WebhookSubscription/WebhookDelivery tables a
 import app.models.skill  # ensure Skill/AgentSkill/RoleSkill tables are registered  # noqa: F401
 import app.models.integration  # ensure Integration table is registered  # noqa: F401
 import app.models.forge  # ensure ForgeRequest table is registered  # noqa: F401
+import app.models.fleet  # ensure FleetJob table is registered  # noqa: F401
 import app.models.api_key  # ensure ApiKey table is registered  # noqa: F401
 import app.models.social_pulse  # ensure SocialPulse/TrendKeyword/PulseNiche tables are registered  # noqa: F401
 import app.models.batch_job  # ensure BatchJob/BatchJobRun tables are registered  # noqa: F401
@@ -943,6 +945,10 @@ app.include_router(skills_routes.agent_skills_router, prefix="/api", dependencie
 app.include_router(skills_routes.role_skills_router, prefix="/api", dependencies=_auth_dep)
 app.include_router(integrations_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(forge_routes.router, prefix="/api", dependencies=_auth_dep)
+# Fleet router has its own auth — UI endpoints use Depends(get_current_user)
+# explicitly; worker endpoints use Depends(require_worker_token). Do not add
+# _auth_dep globally or the worker token scheme is shadowed.
+app.include_router(fleet_routes.router, prefix="/api")
 app.include_router(evolve_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(alerts_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(social_pulse_routes.router, prefix="/api", dependencies=_auth_dep)

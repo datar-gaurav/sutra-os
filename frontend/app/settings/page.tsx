@@ -27,7 +27,7 @@ import { Eye, EyeOff, Database } from "lucide-react";
 
 // ── Group display order & icons ────────────────────────────────────────────
 
-const GROUP_ORDER = ["Resilience", "Watchdog", "Cache", "Conversation", "Memory", "Embeddings", "Rate Limits"];
+const GROUP_ORDER = ["Resilience", "Watchdog", "Cache", "Conversation", "Memory", "Embeddings", "Rate Limits", "Evolve", "Fleet", "Alerting"];
 const ENV_GROUP_ORDER = ["Integrations", "Infrastructure", "Security", "Email (SMTP)", "Scheduler", "Agent Tools"];
 
 const INTEGRATION_SUBGROUPS: Record<string, string> = {
