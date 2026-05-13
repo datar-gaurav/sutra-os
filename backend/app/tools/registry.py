@@ -41,6 +41,7 @@ from app.tools.forge_tools import FORGE_TOOL_IDS, create_forge_tools
 from app.tools.google_drive_tools import GOOGLE_DRIVE_TOOL_IDS, create_google_drive_tools
 from app.tools.scheduling_tools import SCHEDULING_TOOL_IDS, create_scheduling_tools
 from app.tools.evolve_tools import EVOLVE_TOOL_IDS, create_evolve_tools
+from app.tools.fleet_tools import FLEET_TOOL_IDS, create_fleet_tools
 from app.tools.google_calendar_tools import GCAL_TOOL_IDS, create_google_calendar_tools
 from app.tools.workflow_tools import WORKFLOW_TOOL_IDS, create_workflow_tools
 from app.tools.browser_tools import BROWSER_TOOL_IDS, create_browser_tools
@@ -721,6 +722,21 @@ TOOL_CATALOG: list[dict] = [
         "category": "evolve",
         "is_dangerous": False,
     },
+    # ── Fleet ──────────────────────────────────────────────────────────────
+    {
+        "id": "fleet_enqueue_job",
+        "name": "Fleet: Enqueue Job",
+        "description": "Queue a coding task for the Gemini CLI fleet worker. Accepts a short repo alias or full owner/repo. The worker clones the repo, runs the prompt, and opens a PR.",
+        "category": "fleet",
+        "is_dangerous": False,
+    },
+    {
+        "id": "fleet_list_jobs",
+        "name": "Fleet: List Jobs",
+        "description": "List recent fleet jobs with their status, repo, and PR URL.",
+        "category": "fleet",
+        "is_dangerous": False,
+    },
     # ── Browser Automation ─────────────────────────────────────────────────
     {
         "id": "browser_open",
@@ -1048,6 +1064,13 @@ def get_tools_by_ids(tool_ids: list[str], agent_id: str | None = None) -> list[B
             if tid in EVOLVE_TOOL_IDS and tid in evolve_tools_map:
                 tools.append(evolve_tools_map[tid])
 
+    needs_fleet_tools = any(tid in FLEET_TOOL_IDS for tid in tool_ids)
+    if needs_fleet_tools:
+        fleet_tools_map = {t.name: t for t in create_fleet_tools()}
+        for tid in tool_ids:
+            if tid in FLEET_TOOL_IDS and tid in fleet_tools_map:
+                tools.append(fleet_tools_map[tid])
+
     needs_browser_tools = any(tid in BROWSER_TOOL_IDS for tid in tool_ids)
     if needs_browser_tools and agent_id:
         browser_tools_map = {t.name: t for t in create_browser_tools(agent_id)}
@@ -1071,7 +1094,7 @@ def get_tools_by_ids(tool_ids: list[str], agent_id: str | None = None) -> list[B
         | GITLAB_TOOL_IDS | GITHUB_INTEGRATION_TOOL_IDS
         | GOAL_TOOL_IDS | TELEGRAM_TOOL_IDS | FORGE_TOOL_IDS | GOOGLE_DRIVE_TOOL_IDS
         | GCAL_TOOL_IDS | WORKFLOW_TOOL_IDS | SCHEDULING_TOOL_IDS | EVOLVE_TOOL_IDS
-        | BROWSER_TOOL_IDS
+        | FLEET_TOOL_IDS | BROWSER_TOOL_IDS
         | get_all_extension_tool_ids()
     )
 
