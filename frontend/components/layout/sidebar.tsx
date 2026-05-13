@@ -103,6 +103,7 @@ const NAV_GROUPS: NavGroup[] = [
         defaultName: "Forge & Evolve",
         items: [
             { href: "/forge", label: "Forge", icon: Hammer },
+            { href: "/fleet", label: "Fleet", icon: Network },
             { href: "/evolve", label: "Evolve", icon: Dna },
         ],
     },

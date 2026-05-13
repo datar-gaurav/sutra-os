@@ -51,6 +51,28 @@ echo ""
 
 docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>&1 | grep -v WARN
 
+# Fleet worker status (only if user opted in during install)
+PLIST_DEST="$HOME/Library/LaunchAgents/com.sutra.fleet-worker.plist"
+if [ -f "$PLIST_DEST" ]; then
+    echo ""
+    if launchctl list 2>/dev/null | grep -q com.sutra.fleet-worker; then
+        # Probe the daemon — KeepAlive should have it up on :7476
+        if curl -sf -m 2 http://127.0.0.1:7476/health >/dev/null 2>&1; then
+            echo "🛰  Fleet worker:    online at http://127.0.0.1:7476  (logs: ~/Library/Logs/sutra-fleet.log)"
+        else
+            echo "🛰  Fleet worker:    launchd job loaded but daemon not responding on :7476"
+            echo "                    Tail logs: tail -f ~/Library/Logs/sutra-fleet.log"
+        fi
+    else
+        echo "🛰  Fleet worker:    plist present but NOT loaded. Load with:"
+        echo "                    launchctl load $PLIST_DEST"
+    fi
+    if [ ! -f "$HOME/.gemini-fleet-home/.gemini/oauth_creds.json" ]; then
+        echo "                    ⚠  Gemini OAuth missing — run:"
+        echo "                       HOME=$HOME/.gemini-fleet-home gemini auth login"
+    fi
+fi
+
 echo ""
 echo "💡 ./stop.sh    — Stop all services"
 echo "   ./restart.sh — Restart all services"
