@@ -2202,6 +2202,8 @@ export interface FleetWorkerHealth {
     busy?: boolean;
     version?: string;
     worker_id?: string;
+    auth_ready?: boolean;
+    gemini_home?: string;
     error?: string;
 }
 

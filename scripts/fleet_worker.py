@@ -508,7 +508,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/health":
             with _busy_lock:
                 busy_now = _busy
-            self._json(200, {"ok": True, "busy": busy_now, "version": VERSION, "worker_id": WORKER_ID})
+            auth_ready = (GEMINI_HOME / ".gemini" / "oauth_creds.json").exists()
+            self._json(200, {
+                "ok": True,
+                "busy": busy_now,
+                "version": VERSION,
+                "worker_id": WORKER_ID,
+                "auth_ready": auth_ready,
+                "gemini_home": str(GEMINI_HOME),
+            })
             return
         self._json(404, {"error": "not found"})
 
