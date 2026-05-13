@@ -17,6 +17,7 @@ htmlcov/
 # Next.js
 .next/
 node_modules/
+*.tsbuildinfo
 
 # OS
 .DS_Store
