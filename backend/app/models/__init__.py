@@ -1,4 +1,5 @@
 from .agent import Agent, AgentFolder
+from .composed_agent import ComposedAgent
 from .conversation import Conversation, Message
 from .workflow import Workflow
 from .mcp_server import MCPServer

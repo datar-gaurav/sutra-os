@@ -36,6 +36,7 @@ from app.api.routes import purposes as purposes_routes
 from app.api.routes import job_applications as job_applications_routes
 from app.api.routes import job_discovery as job_discovery_routes
 from app.api.routes import voice as voice_routes
+from app.api.routes import composed_agents as composed_agents_routes
 from app.api.websocket import websocket_endpoint
 from app.config import settings
 from app.core.logging_config import configure_logging
@@ -961,6 +962,7 @@ app.include_router(job_applications_routes.router, prefix="/api", dependencies=_
 app.include_router(job_applications_routes.public_router, prefix="/api/public")
 app.include_router(job_discovery_routes.router, prefix="/api", dependencies=_auth_dep)
 app.include_router(voice_routes.router, prefix="/api", dependencies=_auth_dep)
+app.include_router(composed_agents_routes.router, prefix="/api", dependencies=_auth_dep)
 # Public webhook endpoint — token-protected, no JWT required
 from app.api.routes.triggers import public_router as triggers_public_router
 app.include_router(triggers_public_router, prefix="/api/public")

@@ -319,6 +319,111 @@ export const agentsApi = {
         apiFetch<Agent>(`/api/agents/${id}/clone`, { method: "POST" }),
 };
 
+// ─── Composed Agents ────────────────────────────────────────────────────────
+
+export interface GuardrailAttachment {
+    id: string;
+    type: string;
+    config: Record<string, any>;
+    on_reject?: "abort" | "warn";
+}
+
+export interface ComposedAgentNode {
+    id: string;
+    kind: "input" | "llm" | "output";
+    ui?: { position?: { x: number; y: number }; label?: string };
+    guardrails?: GuardrailAttachment[];
+    system_prompt?: string;
+    llm_provider?: string | null;
+    llm_model?: string | null;
+    temperature?: number;
+    max_tokens?: number;
+    output_schema?: Record<string, any> | null;
+    pre_guardrails?: GuardrailAttachment[];
+    post_guardrails?: GuardrailAttachment[];
+}
+
+export interface ComposedAgentEdge {
+    source: string;
+    target: string;
+    condition?: string | null;
+}
+
+export interface ComposedAgentGraphSpec {
+    nodes: ComposedAgentNode[];
+    edges: ComposedAgentEdge[];
+    entry: string;
+}
+
+export interface ComposedAgent {
+    id: string;
+    name: string;
+    description: string | null;
+    graph_spec: ComposedAgentGraphSpec;
+    state_schema: Record<string, any>;
+    version: number;
+    published_version: number | null;
+    is_active: boolean;
+    status: string;
+}
+
+export interface GuardrailDescriptor {
+    id: string;
+    name: string;
+    description: string;
+    kind: "input" | "output" | "both";
+    config_schema: Record<string, any>;
+}
+
+export interface GuardrailRunResult {
+    guardrail_id: string;
+    stage: "input" | "output";
+    passed: boolean;
+    action: "allow" | "mutate" | "reject" | "warn";
+    reason: string;
+    score: number | null;
+    latency_ms: number;
+    mutated_text: string | null;
+}
+
+export interface ComposedRunResponse {
+    output: string;
+    rejected: boolean;
+    rejection_reason: string | null;
+    guardrail_results: GuardrailRunResult[];
+    scratchpad: Record<string, any>;
+}
+
+export const composedAgentsApi = {
+    list: () => apiFetch<ComposedAgent[]>("/api/composed-agents/"),
+    get: (id: string) => apiFetch<ComposedAgent>(`/api/composed-agents/${id}`),
+    create: (data: { name: string; description?: string; graph_spec?: ComposedAgentGraphSpec }) =>
+        apiFetch<ComposedAgent>("/api/composed-agents/", {
+            method: "POST",
+            body: JSON.stringify(data),
+        }),
+    update: (id: string, data: Partial<ComposedAgent>) =>
+        apiFetch<ComposedAgent>(`/api/composed-agents/${id}`, {
+            method: "PUT",
+            body: JSON.stringify(data),
+        }),
+    delete: (id: string) =>
+        apiFetch<void>(`/api/composed-agents/${id}`, { method: "DELETE" }),
+    publish: (id: string) =>
+        apiFetch<ComposedAgent>(`/api/composed-agents/${id}/publish`, { method: "POST" }),
+    run: (id: string, input: string, usePublished = false) =>
+        apiFetch<ComposedRunResponse>(`/api/composed-agents/${id}/run`, {
+            method: "POST",
+            body: JSON.stringify({ input, use_published: usePublished }),
+        }),
+    listGuardrails: () => apiFetch<GuardrailDescriptor[]>("/api/composed-agents/guardrails"),
+    testGuardrail: (data: { type: string; config: Record<string, any>; input: string; stage?: string }) =>
+        apiFetch<GuardrailRunResult>("/api/composed-agents/test-guardrail", {
+            method: "POST",
+            body: JSON.stringify(data),
+        }),
+};
+
 // ─── Voice ──────────────────────────────────────────────────────────────────
 
 export const voiceApi = {
