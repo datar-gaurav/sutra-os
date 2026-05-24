@@ -326,6 +326,32 @@ export interface GuardrailAttachment {
     type: string;
     config: Record<string, any>;
     on_reject?: "abort" | "warn";
+    // Provenance — set when loaded from the SavedGuardrail library.
+    source_id?: string | null;
+    source_version?: number | null;
+}
+
+export interface SavedGuardrail {
+    id: string;
+    name: string;
+    description: string | null;
+    type: string;
+    config: Record<string, any>;
+    version: number;
+}
+
+export interface GuardrailEvent {
+    id: string;
+    composed_agent_id: string;
+    run_id: string;
+    guardrail_id: string;
+    stage: "input" | "output";
+    action: "allow" | "mutate" | "reject" | "warn";
+    passed: boolean;
+    reason: string | null;
+    score: number | null;
+    latency_ms: number;
+    created_at: string | null;
 }
 
 export interface ComposedAgentNode {
@@ -387,6 +413,7 @@ export interface GuardrailRunResult {
 }
 
 export interface ComposedRunResponse {
+    run_id: string;
     output: string;
     rejected: boolean;
     rejection_reason: string | null;
@@ -422,6 +449,28 @@ export const composedAgentsApi = {
             method: "POST",
             body: JSON.stringify(data),
         }),
+    // Saved guardrails library
+    listSaved: () => apiFetch<SavedGuardrail[]>("/api/composed-agents/saved-guardrails"),
+    createSaved: (data: { name: string; description?: string; type: string; config: Record<string, any> }) =>
+        apiFetch<SavedGuardrail>("/api/composed-agents/saved-guardrails", {
+            method: "POST",
+            body: JSON.stringify(data),
+        }),
+    updateSaved: (id: string, data: Partial<SavedGuardrail>) =>
+        apiFetch<SavedGuardrail>(`/api/composed-agents/saved-guardrails/${id}`, {
+            method: "PUT",
+            body: JSON.stringify(data),
+        }),
+    deleteSaved: (id: string) =>
+        apiFetch<void>(`/api/composed-agents/saved-guardrails/${id}`, { method: "DELETE" }),
+    // Audit log
+    listEvents: (id: string, params?: { run_id?: string; limit?: number }) => {
+        const qs = new URLSearchParams();
+        if (params?.run_id) qs.set("run_id", params.run_id);
+        if (params?.limit) qs.set("limit", String(params.limit));
+        const tail = qs.toString() ? `?${qs}` : "";
+        return apiFetch<GuardrailEvent[]>(`/api/composed-agents/${id}/events${tail}`);
+    },
 };
 
 // ─── Voice ──────────────────────────────────────────────────────────────────

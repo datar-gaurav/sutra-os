@@ -8,6 +8,7 @@ run before lookup.
 from app.composed_agents.guardrails.base import Guardrail, get, list_all, register  # noqa: F401
 # Side-effect imports — each module calls register() at the bottom.
 from app.composed_agents.guardrails import (  # noqa: F401
+    group,
     injection_detector,
     pii_redactor,
     prompt_judge,

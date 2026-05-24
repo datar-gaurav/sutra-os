@@ -30,6 +30,8 @@ from app.composed_agents.schemas import GraphSpec, default_graph_spec
 from app.composed_agents.state import initial_state
 from app.db.session import get_db
 from app.models.composed_agent import ComposedAgent
+from app.models.guardrail_event import GuardrailEvent
+from app.models.saved_guardrail import SavedGuardrail
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,7 @@ class RunRequest(BaseModel):
 
 
 class RunResponse(BaseModel):
+    run_id: str                                   # uuid; correlates with /events?run_id=
     output: str                                  # final assistant message text
     rejected: bool                               # true if a guardrail aborted the run
     rejection_reason: Optional[str] = None
@@ -208,7 +211,7 @@ async def run_composed_agent(
         version = agent.version
 
     try:
-        final = await run_once(agent.id, version, agent.graph_spec, data.input)
+        run_id, final = await run_once(agent.id, version, agent.graph_spec, data.input)
     except Exception as e:
         logger.exception("Composed agent run failed")
         raise HTTPException(500, f"Run failed: {e}")
@@ -217,16 +220,74 @@ async def run_composed_agent(
     final_msg = messages[-1] if messages else None
     output_text = _content_to_text(final_msg.content if final_msg else "")
 
-    guardrail_results = [asdict(g) for g in (final.get("guardrail_results") or [])]
+    guardrail_results = list(final.get("guardrail_results") or [])
+    # Persist every verdict to the audit log. Best-effort — log and continue
+    # if it fails so a transient DB error doesn't take down the run.
+    try:
+        for g in guardrail_results:
+            db.add(
+                GuardrailEvent(
+                    composed_agent_id=agent.id,
+                    run_id=run_id,
+                    guardrail_id=g.guardrail_id,
+                    stage=g.stage,
+                    action=g.action,
+                    passed=g.passed,
+                    reason=g.reason,
+                    score=g.score,
+                    latency_ms=g.latency_ms,
+                )
+            )
+        await db.flush()
+    except Exception:
+        logger.exception("Failed to persist guardrail events for run %s", run_id)
+
     rejected = bool(final.get("rejection_message"))
 
     return RunResponse(
+        run_id=run_id,
         output=output_text,
         rejected=rejected,
         rejection_reason=final.get("rejection_message"),
-        guardrail_results=guardrail_results,
+        guardrail_results=[asdict(g) for g in guardrail_results],
         scratchpad=final.get("scratchpad") or {},
     )
+
+
+@router.get("/{agent_id}/events")
+async def list_guardrail_events(
+    agent_id: str,
+    run_id: Optional[str] = None,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+):
+    """Audit log of guardrail verdicts for an agent. Filter by run_id to get a
+    single invocation's trace; omit for the most-recent events across runs."""
+    q = (
+        select(GuardrailEvent)
+        .where(GuardrailEvent.composed_agent_id == agent_id)
+        .order_by(GuardrailEvent.created_at.desc())
+        .limit(min(limit, 1000))
+    )
+    if run_id:
+        q = q.where(GuardrailEvent.run_id == run_id)
+    rows = (await db.execute(q)).scalars().all()
+    return [
+        {
+            "id": e.id,
+            "composed_agent_id": e.composed_agent_id,
+            "run_id": e.run_id,
+            "guardrail_id": e.guardrail_id,
+            "stage": e.stage,
+            "action": e.action,
+            "passed": e.passed,
+            "reason": e.reason,
+            "score": e.score,
+            "latency_ms": e.latency_ms,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in rows
+    ]
 
 
 @router.post("/test-guardrail")
@@ -248,6 +309,97 @@ async def test_guardrail(data: TestGuardrailRequest):
     # Re-tag stage so the response matches the caller's expectation.
     result.stage = data.stage  # type: ignore[assignment]
     return asdict(result)
+
+
+# ─── Saved guardrails (library) ─────────────────────────────────────────────
+
+
+class SavedGuardrailCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    type: str                                       # built-in id or "group"
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class SavedGuardrailUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    config: Optional[dict[str, Any]] = None
+
+
+class SavedGuardrailResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str]
+    type: str
+    config: dict[str, Any]
+    version: int
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/saved-guardrails", response_model=list[SavedGuardrailResponse])
+async def list_saved_guardrails(db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(SavedGuardrail).order_by(SavedGuardrail.name))
+    return res.scalars().all()
+
+
+@router.post("/saved-guardrails", response_model=SavedGuardrailResponse, status_code=201)
+async def create_saved_guardrail(
+    data: SavedGuardrailCreate, db: AsyncSession = Depends(get_db)
+):
+    # Validate that the type is a known guardrail (or 'group').
+    try:
+        guardrails_pkg.get(data.type)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+
+    sg = SavedGuardrail(
+        name=data.name,
+        description=data.description,
+        type=data.type,
+        config=data.config,
+    )
+    db.add(sg)
+    await db.flush()
+    await db.refresh(sg)
+    return sg
+
+
+@router.put("/saved-guardrails/{sg_id}", response_model=SavedGuardrailResponse)
+async def update_saved_guardrail(
+    sg_id: str, data: SavedGuardrailUpdate, db: AsyncSession = Depends(get_db)
+):
+    sg = (await db.execute(select(SavedGuardrail).where(SavedGuardrail.id == sg_id))).scalar_one_or_none()
+    if sg is None:
+        raise HTTPException(404, "Saved guardrail not found")
+    bumped = False
+    if data.config is not None and data.config != sg.config:
+        sg.config = data.config
+        bumped = True
+    if data.name is not None:
+        sg.name = data.name
+    if data.description is not None:
+        sg.description = data.description
+    if bumped:
+        sg.version = (sg.version or 1) + 1
+    await db.flush()
+    await db.refresh(sg)
+    return sg
+
+
+@router.delete("/saved-guardrails/{sg_id}", status_code=204)
+async def delete_saved_guardrail(sg_id: str, db: AsyncSession = Depends(get_db)):
+    sg = (await db.execute(select(SavedGuardrail).where(SavedGuardrail.id == sg_id))).scalar_one_or_none()
+    if sg is None:
+        raise HTTPException(404, "Saved guardrail not found")
+    await db.delete(sg)
+    await db.flush()
+    return None
+
+
+# ─── Misc helpers ───────────────────────────────────────────────────────────
 
 
 def _content_to_text(content: Any) -> str:

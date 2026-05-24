@@ -34,6 +34,13 @@ class GuardrailAttachment(BaseModel):
     # precedence; this is the fallback policy.
     on_reject: Literal["abort", "warn"] = "abort"
 
+    # Provenance — set when the attachment was loaded from the SavedGuardrail
+    # library. Used by the UI to offer "Sync from library" when the library
+    # has a newer version. Config is still a SNAPSHOT (not a live reference)
+    # to avoid silent behavior changes across agents.
+    source_id: str | None = None
+    source_version: int | None = None
+
 
 # ─── Node specs (discriminated union on `kind`) ──────────────────────────────
 

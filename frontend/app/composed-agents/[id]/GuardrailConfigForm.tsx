@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Play, Loader2 } from "lucide-react";
+import { Play, Loader2, BookmarkPlus, Plus, X } from "lucide-react";
 import {
     composedAgentsApi,
     type GuardrailAttachment,
@@ -13,6 +13,7 @@ interface Props {
     descriptor: GuardrailDescriptor;
     attachment: GuardrailAttachment;
     stage: "input" | "output";
+    descriptors?: GuardrailDescriptor[];     // needed by GuardrailGroup for child picker
     onChange: (attachment: GuardrailAttachment) => void;
     onRemove: () => void;
 }
@@ -24,13 +25,38 @@ export default function GuardrailConfigForm({
     descriptor,
     attachment,
     stage,
+    descriptors,
     onChange,
     onRemove,
 }: Props) {
     const cfg = attachment.config || {};
+    const [saveBusy, setSaveBusy] = useState(false);
+    const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
     function setCfg(patch: Record<string, any>) {
         onChange({ ...attachment, config: { ...cfg, ...patch } });
+    }
+
+    async function saveToLibrary() {
+        const name = prompt("Name for this saved guardrail?");
+        if (!name) return;
+        setSaveBusy(true);
+        setSaveMsg(null);
+        try {
+            const sg = await composedAgentsApi.createSaved({
+                name,
+                type: descriptor.id,
+                config: attachment.config,
+            });
+            // Tag the current attachment as sourced from the library.
+            onChange({ ...attachment, source_id: sg.id, source_version: sg.version });
+            setSaveMsg(`Saved as "${name}".`);
+            setTimeout(() => setSaveMsg(null), 2000);
+        } catch (e: any) {
+            setSaveMsg(`Save failed: ${e?.message || e}`);
+        } finally {
+            setSaveBusy(false);
+        }
     }
 
     return (
@@ -39,14 +65,31 @@ export default function GuardrailConfigForm({
                 <div>
                     <div className="font-semibold text-gray-900">{descriptor.name}</div>
                     <div className="text-xs text-gray-500 mt-0.5">{descriptor.description}</div>
+                    {attachment.source_id && (
+                        <div className="text-xs text-amber-700 mt-1">
+                            Loaded from library · v{attachment.source_version}
+                        </div>
+                    )}
                 </div>
-                <button
-                    onClick={onRemove}
-                    className="text-xs text-red-600 hover:text-red-700"
-                >
-                    Remove
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={saveToLibrary}
+                        disabled={saveBusy}
+                        className="flex items-center gap-1 text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-40"
+                        title="Save this configuration to the library for reuse"
+                    >
+                        <BookmarkPlus className="w-3 h-3" />
+                        Save to library
+                    </button>
+                    <button
+                        onClick={onRemove}
+                        className="text-xs text-red-600 hover:text-red-700"
+                    >
+                        Remove
+                    </button>
+                </div>
             </div>
+            {saveMsg && <div className="text-xs text-emerald-700 mb-2">{saveMsg}</div>}
 
             <div className="mb-3">
                 <label className="block text-xs text-gray-500 mb-1">ID (for trace)</label>
@@ -69,6 +112,14 @@ export default function GuardrailConfigForm({
             )}
             {descriptor.id === "injection_detector" && (
                 <InjectionDetectorForm cfg={cfg} setCfg={setCfg} />
+            )}
+            {descriptor.id === "group" && (
+                <GroupForm
+                    cfg={cfg}
+                    setCfg={setCfg}
+                    stage={stage}
+                    descriptors={descriptors || []}
+                />
             )}
 
             <TestPanel descriptor={descriptor} attachment={attachment} stage={stage} />
@@ -202,6 +253,176 @@ function PromptJudgeForm({ cfg, setCfg, stage }: any) {
         </div>
     );
 }
+
+function GroupForm({
+    cfg,
+    setCfg,
+    stage,
+    descriptors,
+}: {
+    cfg: any;
+    setCfg: (patch: Record<string, any>) => void;
+    stage: "input" | "output";
+    descriptors: GuardrailDescriptor[];
+}) {
+    const mode = cfg.mode || "ALL";
+    const children: GuardrailAttachment[] = cfg.children || [];
+    const [pickerOpen, setPickerOpen] = useState(false);
+    const [editingIdx, setEditingIdx] = useState<number | null>(null);
+
+    // Eligible child types — exclude groups from nesting for now (keeps the
+    // UX simple; the backend supports nested groups when authored manually).
+    const eligible = descriptors.filter(
+        (d) => d.id !== "group" && (d.kind === stage || d.kind === "both")
+    );
+
+    function setChildren(next: GuardrailAttachment[]) {
+        setCfg({ children: next });
+    }
+
+    function addChild(d: GuardrailDescriptor) {
+        const id = `${d.id}_child_${children.length + 1}`;
+        const att: GuardrailAttachment = {
+            id,
+            type: d.id,
+            config: {},
+        };
+        setChildren([...children, att]);
+        setPickerOpen(false);
+        setEditingIdx(children.length);
+    }
+
+    function updateChild(i: number, att: GuardrailAttachment) {
+        const next = [...children];
+        next[i] = att;
+        setChildren(next);
+    }
+
+    function removeChild(i: number) {
+        setChildren(children.filter((_, idx) => idx !== i));
+        if (editingIdx === i) setEditingIdx(null);
+    }
+
+    const editing = editingIdx !== null ? children[editingIdx] : null;
+    const editingDescriptor = editing
+        ? descriptors.find((d) => d.id === editing.type)
+        : null;
+
+    return (
+        <div className="space-y-3">
+            <div>
+                <label className="block text-xs text-gray-500 mb-1">Mode</label>
+                <div className="flex gap-1">
+                    {(["ALL", "ANY", "SEQUENCE"] as const).map((m) => (
+                        <button
+                            key={m}
+                            onClick={() => setCfg({ mode: m })}
+                            className={`text-xs px-2.5 py-1 rounded border ${
+                                mode === m
+                                    ? "bg-amber-100 border-amber-400 text-amber-800"
+                                    : "bg-white border-gray-300 text-gray-700 hover:border-amber-400"
+                            }`}
+                        >
+                            {m}
+                        </button>
+                    ))}
+                </div>
+                <div className="text-xs text-gray-500 mt-1 italic">
+                    {mode === "ALL" && "Every child must pass. First reject is fatal; mutations chain."}
+                    {mode === "ANY" && "Group passes if any child passes. Mutations are not applied."}
+                    {mode === "SEQUENCE" && "Ordered evaluation. Same semantics as ALL."}
+                </div>
+            </div>
+            <div>
+                <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs text-gray-500">Children</label>
+                    <button
+                        onClick={() => setPickerOpen(true)}
+                        className="flex items-center gap-1 text-xs px-2 py-0.5 bg-gray-900 text-white rounded hover:bg-black"
+                    >
+                        <Plus className="w-3 h-3" /> Add child
+                    </button>
+                </div>
+                {children.length === 0 ? (
+                    <div className="text-xs text-gray-400 italic py-2">No children yet.</div>
+                ) : (
+                    <div className="space-y-1">
+                        {children.map((c, i) => {
+                            const d = descriptors.find((x) => x.id === c.type);
+                            return (
+                                <div
+                                    key={i}
+                                    className={`flex items-center justify-between text-xs p-2 rounded border ${
+                                        editingIdx === i
+                                            ? "bg-amber-50 border-amber-300"
+                                            : "bg-gray-50 border-gray-200"
+                                    }`}
+                                >
+                                    <button
+                                        onClick={() => setEditingIdx(editingIdx === i ? null : i)}
+                                        className="text-left flex-1"
+                                    >
+                                        <span className="font-medium">{d?.name || c.type}</span>
+                                        <span className="text-gray-500"> · {c.id}</span>
+                                    </button>
+                                    <button
+                                        onClick={() => removeChild(i)}
+                                        className="text-gray-400 hover:text-red-600 p-0.5"
+                                    >
+                                        <X className="w-3 h-3" />
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+                {editing && editingDescriptor && editingIdx !== null && (
+                    <div className="mt-2 pl-3 border-l-2 border-amber-300">
+                        <GuardrailConfigForm
+                            descriptor={editingDescriptor}
+                            attachment={editing}
+                            stage={stage}
+                            descriptors={descriptors}
+                            onChange={(att) => updateChild(editingIdx, att)}
+                            onRemove={() => removeChild(editingIdx)}
+                        />
+                    </div>
+                )}
+            </div>
+            {pickerOpen && (
+                <div
+                    className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]"
+                    onClick={() => setPickerOpen(false)}
+                >
+                    <div
+                        className="bg-white rounded-xl shadow-2xl p-5 w-[420px] max-h-[70vh] overflow-y-auto"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between mb-3">
+                            <div className="font-semibold">Add child guardrail</div>
+                            <button onClick={() => setPickerOpen(false)} className="text-gray-400">
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+                        <div className="space-y-2">
+                            {eligible.map((d) => (
+                                <button
+                                    key={d.id}
+                                    onClick={() => addChild(d)}
+                                    className="block w-full text-left p-2.5 border border-gray-200 rounded hover:border-amber-400 hover:bg-amber-50"
+                                >
+                                    <div className="font-medium text-sm">{d.name}</div>
+                                    <div className="text-xs text-gray-500">{d.description}</div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 
 function InjectionDetectorForm({ cfg, setCfg }: any) {
     return (

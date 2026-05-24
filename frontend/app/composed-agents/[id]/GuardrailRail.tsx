@@ -1,9 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { Plus, Shield, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Plus, Shield, X, BookOpen } from "lucide-react";
 import GuardrailConfigForm from "./GuardrailConfigForm";
-import type { GuardrailAttachment, GuardrailDescriptor } from "@/lib/api";
+import {
+    composedAgentsApi,
+    type GuardrailAttachment,
+    type GuardrailDescriptor,
+    type SavedGuardrail,
+} from "@/lib/api";
 
 interface Props {
     stage: "input" | "output";
@@ -29,6 +34,20 @@ export default function GuardrailRail({ stage, attachments, descriptors, onChang
             id,
             type: d.id,
             config: defaultConfigFor(d),
+        };
+        onChange([...attachments, next]);
+        setPickerOpen(false);
+        setEditingId(id);
+    }
+
+    function addFromLibrary(sg: SavedGuardrail) {
+        const id = `${sg.name.replace(/\W+/g, "_").toLowerCase() || sg.type}_${attachments.length + 1}`;
+        const next: GuardrailAttachment = {
+            id,
+            type: sg.type,
+            config: sg.config,
+            source_id: sg.id,
+            source_version: sg.version,
         };
         onChange([...attachments, next]);
         setPickerOpen(false);
@@ -104,6 +123,7 @@ export default function GuardrailRail({ stage, attachments, descriptors, onChang
                 <PickerModal
                     eligible={eligible}
                     onPick={addGuardrail}
+                    onPickFromLibrary={addFromLibrary}
                     onClose={() => setPickerOpen(false)}
                 />
             )}
@@ -112,6 +132,7 @@ export default function GuardrailRail({ stage, attachments, descriptors, onChang
                 <EditorModal
                     descriptor={editingDescriptor}
                     attachment={editingAttachment}
+                    descriptors={descriptors}
                     stage={stage}
                     onChange={(att) => updateAttachment(editing, att)}
                     onClose={() => setEditingId(null)}
@@ -128,44 +149,111 @@ export default function GuardrailRail({ stage, attachments, descriptors, onChang
 function PickerModal({
     eligible,
     onPick,
+    onPickFromLibrary,
     onClose,
 }: {
     eligible: GuardrailDescriptor[];
     onPick: (d: GuardrailDescriptor) => void;
+    onPickFromLibrary: (sg: SavedGuardrail) => void;
     onClose: () => void;
 }) {
+    const [tab, setTab] = useState<"library" | "builtin">("builtin");
+    const [saved, setSaved] = useState<SavedGuardrail[]>([]);
+    const [savedLoading, setSavedLoading] = useState(true);
+
+    useEffect(() => {
+        composedAgentsApi
+            .listSaved()
+            .then(setSaved)
+            .catch(console.error)
+            .finally(() => setSavedLoading(false));
+    }, []);
+
     return (
         <div
             className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
             onClick={onClose}
         >
             <div
-                className="bg-white rounded-xl shadow-2xl p-6 w-[480px] max-h-[80vh] overflow-y-auto"
+                className="bg-white rounded-xl shadow-2xl p-6 w-[520px] max-h-[80vh] overflow-y-auto"
                 onClick={(e) => e.stopPropagation()}
             >
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center justify-between mb-3">
                     <div className="font-semibold text-lg">Add a guardrail</div>
                     <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
                         <X className="w-5 h-5" />
                     </button>
                 </div>
-                <div className="space-y-2">
-                    {eligible.length === 0 && (
-                        <div className="text-sm text-gray-500">
-                            No guardrails available for this stage.
-                        </div>
-                    )}
-                    {eligible.map((d) => (
-                        <button
-                            key={d.id}
-                            onClick={() => onPick(d)}
-                            className="block w-full text-left p-3 border border-gray-200 rounded-lg hover:border-amber-400 hover:bg-amber-50"
-                        >
-                            <div className="font-medium">{d.name}</div>
-                            <div className="text-xs text-gray-500 mt-1">{d.description}</div>
-                        </button>
-                    ))}
+                <div className="flex border-b border-gray-200 mb-3">
+                    <button
+                        onClick={() => setTab("builtin")}
+                        className={`px-3 py-1.5 text-sm border-b-2 ${
+                            tab === "builtin"
+                                ? "border-amber-600 text-amber-700 font-semibold"
+                                : "border-transparent text-gray-500"
+                        }`}
+                    >
+                        Built-in
+                    </button>
+                    <button
+                        onClick={() => setTab("library")}
+                        className={`px-3 py-1.5 text-sm border-b-2 flex items-center gap-1 ${
+                            tab === "library"
+                                ? "border-amber-600 text-amber-700 font-semibold"
+                                : "border-transparent text-gray-500"
+                        }`}
+                    >
+                        <BookOpen className="w-3.5 h-3.5" />
+                        Library ({saved.length})
+                    </button>
                 </div>
+
+                {tab === "builtin" && (
+                    <div className="space-y-2">
+                        {eligible.length === 0 && (
+                            <div className="text-sm text-gray-500">
+                                No guardrails available for this stage.
+                            </div>
+                        )}
+                        {eligible.map((d) => (
+                            <button
+                                key={d.id}
+                                onClick={() => onPick(d)}
+                                className="block w-full text-left p-3 border border-gray-200 rounded-lg hover:border-amber-400 hover:bg-amber-50"
+                            >
+                                <div className="font-medium">{d.name}</div>
+                                <div className="text-xs text-gray-500 mt-1">{d.description}</div>
+                            </button>
+                        ))}
+                    </div>
+                )}
+
+                {tab === "library" && (
+                    <div className="space-y-2">
+                        {savedLoading ? (
+                            <div className="text-sm text-gray-500">Loading…</div>
+                        ) : saved.length === 0 ? (
+                            <div className="text-sm text-gray-500 italic">
+                                No saved guardrails yet. Configure a guardrail and click
+                                "Save to library" to start the collection.
+                            </div>
+                        ) : (
+                            saved.map((sg) => (
+                                <button
+                                    key={sg.id}
+                                    onClick={() => onPickFromLibrary(sg)}
+                                    className="block w-full text-left p-3 border border-gray-200 rounded-lg hover:border-amber-400 hover:bg-amber-50"
+                                >
+                                    <div className="font-medium">{sg.name}</div>
+                                    <div className="text-xs text-gray-500 mt-1">
+                                        {sg.type} · v{sg.version}
+                                        {sg.description && ` — ${sg.description}`}
+                                    </div>
+                                </button>
+                            ))
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -174,6 +262,7 @@ function PickerModal({
 function EditorModal({
     descriptor,
     attachment,
+    descriptors,
     stage,
     onChange,
     onClose,
@@ -181,6 +270,7 @@ function EditorModal({
 }: {
     descriptor: GuardrailDescriptor;
     attachment: GuardrailAttachment;
+    descriptors: GuardrailDescriptor[];
     stage: "input" | "output";
     onChange: (a: GuardrailAttachment) => void;
     onClose: () => void;
@@ -192,7 +282,7 @@ function EditorModal({
             onClick={onClose}
         >
             <div
-                className="bg-white rounded-xl shadow-2xl w-[560px] max-h-[85vh] overflow-y-auto"
+                className="bg-white rounded-xl shadow-2xl w-[640px] max-h-[88vh] overflow-y-auto"
                 onClick={(e) => e.stopPropagation()}
             >
                 <div className="flex items-center justify-between px-5 py-3 border-b">
@@ -206,6 +296,7 @@ function EditorModal({
                         descriptor={descriptor}
                         attachment={attachment}
                         stage={stage}
+                        descriptors={descriptors}
                         onChange={onChange}
                         onRemove={onRemove}
                     />
@@ -245,6 +336,9 @@ function defaultConfigFor(d: GuardrailDescriptor): Record<string, any> {
             min_confidence: 0.6,
             action: "reject",
         };
+    }
+    if (d.id === "group") {
+        return { mode: "ALL", children: [] };
     }
     return {};
 }

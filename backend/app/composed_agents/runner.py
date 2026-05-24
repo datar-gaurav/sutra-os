@@ -12,6 +12,7 @@ manual on publish or graph_spec mutation — see invalidate().
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from langchain_core.messages import HumanMessage
@@ -51,13 +52,17 @@ async def run_once(
     version: int,
     graph_spec: dict[str, Any],
     user_message: str,
-) -> dict[str, Any]:
-    """Invoke a composed agent on a single user message; return the final state.
+) -> tuple[str, dict[str, Any]]:
+    """Invoke a composed agent on a single user message.
 
-    Returns the raw final state dict so the caller can render messages,
-    guardrail results, scratchpad, and cost as they like.
+    Returns (run_id, final_state). The run_id correlates rows in
+    guardrail_events from this invocation — callers that want audit
+    persistence should pass it to the event-write helper.
     """
+    run_id = str(uuid.uuid4())
     graph = get_or_compile(agent_id, version, graph_spec)
     init = initial_state(HumanMessage(content=user_message))
+    # Stash the run_id in scratchpad so nodes and downstream consumers can read it.
+    init["scratchpad"] = {**(init.get("scratchpad") or {}), "run_id": run_id}
     final = await graph.ainvoke(init)
-    return final
+    return run_id, final

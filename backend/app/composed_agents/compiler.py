@@ -30,12 +30,139 @@ from app.composed_agents.schemas import (
     OutputNode,
 )
 from app.composed_agents.state import AgentState, GuardrailResult
+from app.composed_agents.guardrails.group import GROUP_TYPE
 from app.core.llm_registry import llm_registry
 
 logger = logging.getLogger(__name__)
 
 
 # ─── Guardrail chain runner ──────────────────────────────────────────────────
+
+
+def _coerce_children(raw: list[Any]) -> list[GuardrailAttachment]:
+    """Children inside a Group's config arrive as plain dicts (since the parent
+    Attachment's config is an arbitrary JSON blob). Validate them as proper
+    GuardrailAttachment instances before recursing."""
+    out: list[GuardrailAttachment] = []
+    for child in raw or []:
+        if isinstance(child, GuardrailAttachment):
+            out.append(child)
+        else:
+            out.append(GuardrailAttachment.model_validate(child))
+    return out
+
+
+async def _run_one_guardrail(
+    att: GuardrailAttachment,
+    state: AgentState,
+    default_stage: str,
+) -> tuple[list[GuardrailResult], AgentState, GuardrailResult | None]:
+    """Run a single attachment. Groups expand recursively; everything else
+    dispatches via the registry. Returns (results, possibly_mutated_state,
+    fatal) so the caller can splat into the surrounding chain.
+    """
+    if att.type == GROUP_TYPE:
+        cfg = att.config or {}
+        mode = (cfg.get("mode") or "ALL").upper()
+        children = _coerce_children(cfg.get("children") or [])
+        return await _run_group(att, mode, children, state, default_stage)
+
+    try:
+        g = guardrails_pkg.get(att.type)
+    except KeyError as e:
+        logger.warning("Unknown guardrail '%s' in attachment '%s': %s", att.type, att.id, e)
+        return [], state, None
+
+    try:
+        res = await g.check(state, att.config or {})
+    except Exception as e:
+        logger.exception("guardrail %s crashed", att.id)
+        res = GuardrailResult(
+            guardrail_id=att.id,
+            stage=default_stage,  # type: ignore[arg-type]
+            passed=True,
+            action="warn",
+            reason=f"Guardrail crashed: {e}",
+        )
+
+    res.guardrail_id = att.id
+    res.stage = default_stage  # type: ignore[assignment]
+
+    next_state = state
+    if res.action == "mutate" and res.mutated_text is not None:
+        next_state = _replace_head_text(state, res.mutated_text)
+
+    fatal = res if (res.action == "reject" and not res.passed) else None
+    return [res], next_state, fatal
+
+
+async def _run_group(
+    group_att: GuardrailAttachment,
+    mode: str,
+    children: list[GuardrailAttachment],
+    state: AgentState,
+    default_stage: str,
+) -> tuple[list[GuardrailResult], AgentState, GuardrailResult | None]:
+    """Expand a group attachment under the configured mode.
+
+    Modes:
+      ALL / SEQUENCE — equivalent to running children as a sub-chain: first
+        reject is fatal, mutations chain. ANY's semantics for mutations are
+        ambiguous, so ANY explicitly does not apply mutations.
+      ANY            — group passes if ANY child passes. Only reject if every
+        child rejects; the synthesized group result aggregates child reasons.
+    """
+    if mode in ("ALL", "SEQUENCE"):
+        results: list[GuardrailResult] = []
+        cur = state
+        for child in children:
+            sub, cur, fatal = await _run_one_guardrail(child, cur, default_stage)
+            results.extend(sub)
+            if fatal is not None:
+                # Synthesize a group-level fatal so the trace points at the group too.
+                group_fatal = GuardrailResult(
+                    guardrail_id=group_att.id,
+                    stage=default_stage,  # type: ignore[arg-type]
+                    passed=False,
+                    action="reject",
+                    reason=f"Group '{group_att.id}' ({mode}) rejected: {fatal.reason}",
+                )
+                return results + [group_fatal], cur, group_fatal
+        # Optional summary so the trace shows the group's pass verdict too.
+        return results, cur, None
+
+    if mode == "ANY":
+        results: list[GuardrailResult] = []
+        any_passed = False
+        first_pass_reason = ""
+        for child in children:
+            sub, _ignored, _fatal = await _run_one_guardrail(child, state, default_stage)
+            results.extend(sub)
+            for r in sub:
+                if r.action != "reject":
+                    any_passed = True
+                    if not first_pass_reason:
+                        first_pass_reason = r.reason
+        if any_passed:
+            summary = GuardrailResult(
+                guardrail_id=group_att.id,
+                stage=default_stage,  # type: ignore[arg-type]
+                passed=True,
+                action="allow",
+                reason=f"Group '{group_att.id}' (ANY) passed: {first_pass_reason}",
+            )
+            return results + [summary], state, None
+        joined = "; ".join(r.reason for r in results) or "all children rejected"
+        summary = GuardrailResult(
+            guardrail_id=group_att.id,
+            stage=default_stage,  # type: ignore[arg-type]
+            passed=False,
+            action="reject",
+            reason=f"Group '{group_att.id}' (ANY) rejected: {joined}",
+        )
+        return results + [summary], state, summary
+
+    raise ValueError(f"Unknown group mode '{mode}' on '{group_att.id}'")
 
 
 async def _run_guardrails(
@@ -45,45 +172,19 @@ async def _run_guardrails(
 ) -> tuple[list[GuardrailResult], AgentState, GuardrailResult | None]:
     """Run a guardrail chain in order. Returns (results, possibly_mutated_state, fatal).
 
-    Stops at the first guardrail that returns action="reject" — that one is
+    Stops at the first attachment that returns a fatal verdict — that one is
     the `fatal` return value and the caller short-circuits to the END node.
+    Groups expand inline via _run_one_guardrail; their summary verdict counts
+    as the chain's verdict for that step.
     """
     results: list[GuardrailResult] = []
     cur_state = state
 
     for att in attachments:
-        try:
-            g = guardrails_pkg.get(att.type)
-        except KeyError as e:
-            logger.warning("Unknown guardrail '%s' in attachment '%s': %s", att.type, att.id, e)
-            continue
-
-        try:
-            res = await g.check(cur_state, att.config or {})
-        except Exception as e:
-            logger.exception("guardrail %s crashed", att.id)
-            res = GuardrailResult(
-                guardrail_id=att.id,
-                stage=default_stage,  # type: ignore[arg-type]
-                passed=True,  # fail-open on crash; surfaced in trace
-                action="warn",
-                reason=f"Guardrail crashed: {e}",
-            )
-
-        # Re-tag to the attachment id so the trace points at the user-configured
-        # instance, not the built-in type. (Helpful when multiple instances of
-        # the same type are attached.)
-        res.guardrail_id = att.id
-        res.stage = default_stage  # type: ignore[assignment]
-
-        results.append(res)
-
-        # Apply mutation (e.g. PII redactor in redact mode).
-        if res.action == "mutate" and res.mutated_text is not None:
-            cur_state = _replace_head_text(cur_state, res.mutated_text)
-
-        if res.action == "reject" and not res.passed:
-            return results, cur_state, res
+        sub, cur_state, fatal = await _run_one_guardrail(att, cur_state, default_stage)
+        results.extend(sub)
+        if fatal is not None:
+            return results, cur_state, fatal
 
     return results, cur_state, None
 
