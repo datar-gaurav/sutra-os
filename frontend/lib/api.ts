@@ -421,6 +421,49 @@ export interface ComposedRunResponse {
     scratchpad: Record<string, any>;
 }
 
+export interface EvalSuite {
+    id: string;
+    composed_agent_id: string;
+    name: string;
+    description: string | null;
+}
+
+export interface EvalCase {
+    id: string;
+    suite_id: string;
+    name: string;
+    input: string;
+    judge_rubric: string | null;
+    expected_guardrail_blocked: boolean | null;
+    expected_schema: Record<string, any> | null;
+    category: string | null;
+    source: string;
+}
+
+export interface EvalRunSummary {
+    id: string;
+    suite_id: string;
+    status: string;
+    total: number;
+    passed: number;
+    failed: number;
+    agent_version_at_run: number;
+    started_at: string | null;
+    completed_at: string | null;
+    error: string | null;
+}
+
+export interface EvalResultRow {
+    id: string;
+    case_id: string;
+    passed: boolean;
+    verdict: string;
+    reason: string | null;
+    output: string | null;
+    latency_ms: number;
+    judge_confidence: number | null;
+}
+
 export const composedAgentsApi = {
     list: () => apiFetch<ComposedAgent[]>("/api/composed-agents/"),
     get: (id: string) => apiFetch<ComposedAgent>(`/api/composed-agents/${id}`),
@@ -471,6 +514,36 @@ export const composedAgentsApi = {
         const tail = qs.toString() ? `?${qs}` : "";
         return apiFetch<GuardrailEvent[]>(`/api/composed-agents/${id}/events${tail}`);
     },
+    // Evals
+    listEvalSuites: (id: string) =>
+        apiFetch<EvalSuite[]>(`/api/composed-agents/${id}/eval-suites`),
+    createEvalSuite: (id: string, data: { name: string; description?: string }) =>
+        apiFetch<EvalSuite>(`/api/composed-agents/${id}/eval-suites`, {
+            method: "POST",
+            body: JSON.stringify(data),
+        }),
+    listEvalCases: (suiteId: string) =>
+        apiFetch<EvalCase[]>(`/api/composed-agents/eval-suites/${suiteId}/cases`),
+    createEvalCase: (suiteId: string, data: Partial<EvalCase>) =>
+        apiFetch<EvalCase>(`/api/composed-agents/eval-suites/${suiteId}/cases`, {
+            method: "POST",
+            body: JSON.stringify(data),
+        }),
+    deleteEvalCase: (caseId: string) =>
+        apiFetch<void>(`/api/composed-agents/eval-cases/${caseId}`, { method: "DELETE" }),
+    generateEvalCases: (suiteId: string, data: { target_count?: number }) =>
+        apiFetch<EvalCase[]>(
+            `/api/composed-agents/eval-suites/${suiteId}/generate`,
+            { method: "POST", body: JSON.stringify(data) }
+        ),
+    runEvalSuite: (suiteId: string) =>
+        apiFetch<EvalRunSummary>(`/api/composed-agents/eval-suites/${suiteId}/run`, {
+            method: "POST",
+        }),
+    listEvalRuns: (suiteId: string) =>
+        apiFetch<EvalRunSummary[]>(`/api/composed-agents/eval-suites/${suiteId}/runs`),
+    listEvalResults: (runId: string) =>
+        apiFetch<EvalResultRow[]>(`/api/composed-agents/eval-runs/${runId}`),
 };
 
 // ─── Voice ──────────────────────────────────────────────────────────────────

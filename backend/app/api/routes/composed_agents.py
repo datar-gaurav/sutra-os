@@ -25,11 +25,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.composed_agents import guardrails as guardrails_pkg
+from app.composed_agents.evals.generator import generate_cases
+from app.composed_agents.evals.runner import run_case
 from app.composed_agents.runner import invalidate, run_once
 from app.composed_agents.schemas import GraphSpec, default_graph_spec
 from app.composed_agents.state import initial_state
 from app.db.session import get_db
 from app.models.composed_agent import ComposedAgent
+from app.models.eval import EvalCase, EvalResult, EvalRun, EvalSuite
 from app.models.guardrail_event import GuardrailEvent
 from app.models.saved_guardrail import SavedGuardrail
 
@@ -397,6 +400,309 @@ async def delete_saved_guardrail(sg_id: str, db: AsyncSession = Depends(get_db))
     await db.delete(sg)
     await db.flush()
     return None
+
+
+# ─── Evals ──────────────────────────────────────────────────────────────────
+
+
+class EvalSuiteCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class EvalSuiteResponse(BaseModel):
+    id: str
+    composed_agent_id: str
+    name: str
+    description: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class EvalCaseCreate(BaseModel):
+    name: str
+    input: str
+    judge_rubric: Optional[str] = None
+    expected_guardrail_blocked: Optional[bool] = None
+    expected_schema: Optional[dict[str, Any]] = None
+    category: Optional[str] = None
+    source: str = "authored"
+
+
+class EvalCaseResponse(BaseModel):
+    id: str
+    suite_id: str
+    name: str
+    input: str
+    judge_rubric: Optional[str]
+    expected_guardrail_blocked: Optional[bool]
+    expected_schema: Optional[dict[str, Any]]
+    category: Optional[str]
+    source: str
+
+    class Config:
+        from_attributes = True
+
+
+class EvalGenerateRequest(BaseModel):
+    target_count: int = 12
+    judge_provider: str = "openai"
+    judge_model: str = "gpt-4o-mini"
+
+
+class EvalRunSummary(BaseModel):
+    id: str
+    suite_id: str
+    status: str
+    total: int
+    passed: int
+    failed: int
+    agent_version_at_run: int
+    started_at: Optional[str]
+    completed_at: Optional[str]
+    error: Optional[str]
+
+
+class EvalResultRow(BaseModel):
+    id: str
+    case_id: str
+    passed: bool
+    verdict: str
+    reason: Optional[str]
+    output: Optional[str]
+    latency_ms: int
+    judge_confidence: Optional[float]
+
+
+@router.get("/{agent_id}/eval-suites", response_model=list[EvalSuiteResponse])
+async def list_eval_suites(agent_id: str, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(EvalSuite).where(EvalSuite.composed_agent_id == agent_id))
+    return res.scalars().all()
+
+
+@router.post("/{agent_id}/eval-suites", response_model=EvalSuiteResponse, status_code=201)
+async def create_eval_suite(
+    agent_id: str, data: EvalSuiteCreate, db: AsyncSession = Depends(get_db)
+):
+    await _get_or_404(db, agent_id)
+    suite = EvalSuite(composed_agent_id=agent_id, name=data.name, description=data.description)
+    db.add(suite)
+    await db.flush()
+    await db.refresh(suite)
+    return suite
+
+
+@router.get("/eval-suites/{suite_id}/cases", response_model=list[EvalCaseResponse])
+async def list_eval_cases(suite_id: str, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(
+        select(EvalCase).where(EvalCase.suite_id == suite_id).order_by(EvalCase.created_at)
+    )
+    return res.scalars().all()
+
+
+@router.post(
+    "/eval-suites/{suite_id}/cases",
+    response_model=EvalCaseResponse,
+    status_code=201,
+)
+async def create_eval_case(
+    suite_id: str, data: EvalCaseCreate, db: AsyncSession = Depends(get_db)
+):
+    case = EvalCase(
+        suite_id=suite_id,
+        name=data.name,
+        input=data.input,
+        judge_rubric=data.judge_rubric,
+        expected_guardrail_blocked=data.expected_guardrail_blocked,
+        expected_schema=data.expected_schema,
+        category=data.category,
+        source=data.source,
+    )
+    db.add(case)
+    await db.flush()
+    await db.refresh(case)
+    return case
+
+
+@router.delete("/eval-cases/{case_id}", status_code=204)
+async def delete_eval_case(case_id: str, db: AsyncSession = Depends(get_db)):
+    case = (await db.execute(select(EvalCase).where(EvalCase.id == case_id))).scalar_one_or_none()
+    if case is None:
+        raise HTTPException(404, "Case not found")
+    await db.delete(case)
+    await db.flush()
+    return None
+
+
+@router.post("/eval-suites/{suite_id}/generate", response_model=list[EvalCaseResponse])
+async def generate_eval_cases(
+    suite_id: str, data: EvalGenerateRequest, db: AsyncSession = Depends(get_db)
+):
+    """Use the synthetic generator to add new cases to the suite. Existing
+    case names are passed in to discourage duplicates."""
+    suite = (await db.execute(select(EvalSuite).where(EvalSuite.id == suite_id))).scalar_one_or_none()
+    if suite is None:
+        raise HTTPException(404, "Suite not found")
+    agent = await _get_or_404(db, suite.composed_agent_id)
+
+    existing = (
+        await db.execute(select(EvalCase.name).where(EvalCase.suite_id == suite_id))
+    ).scalars().all()
+
+    generated = await generate_cases(
+        agent.graph_spec,
+        existing_case_names=list(existing),
+        target_count=data.target_count,
+        judge_provider=data.judge_provider,
+        judge_model=data.judge_model,
+    )
+
+    out: list[EvalCase] = []
+    for c in generated:
+        row = EvalCase(
+            suite_id=suite_id,
+            name=c["name"],
+            input=c["input"],
+            judge_rubric=c.get("judge_rubric"),
+            expected_guardrail_blocked=c.get("expected_guardrail_blocked"),
+            category=c.get("category"),
+            source="synthetic",
+        )
+        db.add(row)
+        out.append(row)
+    await db.flush()
+    for r in out:
+        await db.refresh(r)
+    return out
+
+
+@router.post("/eval-suites/{suite_id}/run", response_model=EvalRunSummary)
+async def run_eval_suite(suite_id: str, db: AsyncSession = Depends(get_db)):
+    """Run the full suite synchronously. For larger suites, the right
+    follow-up is to push this onto Celery — keeping it inline for Phase 3."""
+    suite = (await db.execute(select(EvalSuite).where(EvalSuite.id == suite_id))).scalar_one_or_none()
+    if suite is None:
+        raise HTTPException(404, "Suite not found")
+    agent = await _get_or_404(db, suite.composed_agent_id)
+    cases = (
+        await db.execute(select(EvalCase).where(EvalCase.suite_id == suite_id))
+    ).scalars().all()
+
+    run = EvalRun(
+        suite_id=suite_id,
+        status="running",
+        total=len(cases),
+        agent_version_at_run=agent.version,
+    )
+    db.add(run)
+    await db.flush()
+
+    passed_count = 0
+    failed_count = 0
+    error_msg: Optional[str] = None
+    try:
+        for case in cases:
+            outcome = await run_case(
+                composed_agent_id=agent.id,
+                composed_agent_version=agent.version,
+                graph_spec=agent.graph_spec,
+                case_id=case.id,
+                case_name=case.name,
+                case_input=case.input,
+                judge_rubric=case.judge_rubric,
+                expected_guardrail_blocked=case.expected_guardrail_blocked,
+                expected_schema=case.expected_schema,
+            )
+            db.add(
+                EvalResult(
+                    run_id=run.id,
+                    case_id=case.id,
+                    passed=outcome.passed,
+                    verdict=outcome.verdict,
+                    reason=outcome.reason,
+                    output=outcome.output,
+                    latency_ms=outcome.latency_ms,
+                    judge_confidence=outcome.judge_confidence,
+                )
+            )
+            if outcome.passed:
+                passed_count += 1
+            else:
+                failed_count += 1
+    except Exception as e:
+        logger.exception("Eval run failed")
+        error_msg = str(e)
+
+    run.passed = passed_count
+    run.failed = failed_count
+    run.status = "completed" if error_msg is None else "error"
+    run.error = error_msg
+    from datetime import datetime, timezone as _tz
+    run.completed_at = datetime.now(_tz.utc)
+
+    await db.flush()
+    await db.refresh(run)
+    return EvalRunSummary(
+        id=run.id,
+        suite_id=run.suite_id,
+        status=run.status,
+        total=run.total,
+        passed=run.passed,
+        failed=run.failed,
+        agent_version_at_run=run.agent_version_at_run,
+        started_at=run.started_at.isoformat() if run.started_at else None,
+        completed_at=run.completed_at.isoformat() if run.completed_at else None,
+        error=run.error,
+    )
+
+
+@router.get("/eval-runs/{run_id}", response_model=list[EvalResultRow])
+async def list_eval_results(run_id: str, db: AsyncSession = Depends(get_db)):
+    rows = (
+        await db.execute(
+            select(EvalResult).where(EvalResult.run_id == run_id).order_by(EvalResult.created_at)
+        )
+    ).scalars().all()
+    return [
+        EvalResultRow(
+            id=r.id,
+            case_id=r.case_id,
+            passed=r.passed,
+            verdict=r.verdict,
+            reason=r.reason,
+            output=r.output,
+            latency_ms=r.latency_ms,
+            judge_confidence=r.judge_confidence,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/eval-suites/{suite_id}/runs", response_model=list[EvalRunSummary])
+async def list_eval_runs(suite_id: str, db: AsyncSession = Depends(get_db)):
+    rows = (
+        await db.execute(
+            select(EvalRun)
+            .where(EvalRun.suite_id == suite_id)
+            .order_by(EvalRun.started_at.desc())
+        )
+    ).scalars().all()
+    return [
+        EvalRunSummary(
+            id=r.id,
+            suite_id=r.suite_id,
+            status=r.status,
+            total=r.total,
+            passed=r.passed,
+            failed=r.failed,
+            agent_version_at_run=r.agent_version_at_run,
+            started_at=r.started_at.isoformat() if r.started_at else None,
+            completed_at=r.completed_at.isoformat() if r.completed_at else None,
+            error=r.error,
+        )
+        for r in rows
+    ]
 
 
 # ─── Misc helpers ───────────────────────────────────────────────────────────

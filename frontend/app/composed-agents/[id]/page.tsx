@@ -15,8 +15,10 @@ import Canvas from "./Canvas";
 import GuardrailRail from "./GuardrailRail";
 import NodeInspector from "./NodeInspector";
 import TestRunner from "./TestRunner";
+import EvalsTab from "./EvalsTab";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
+type ViewTab = "graph" | "evals";
 
 export default function ComposedAgentDetailPage() {
     const params = useParams();
@@ -27,6 +29,7 @@ export default function ComposedAgentDetailPage() {
     const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
     const [saveState, setSaveState] = useState<SaveState>("idle");
     const [saveErr, setSaveErr] = useState<string | null>(null);
+    const [tab, setTab] = useState<ViewTab>("graph");
 
     useEffect(() => {
         Promise.all([composedAgentsApi.get(id), composedAgentsApi.listGuardrails()])
@@ -184,39 +187,71 @@ export default function ComposedAgentDetailPage() {
                 </div>
             )}
 
-            {/* Canvas + side panel */}
-            <div className="flex flex-1 overflow-hidden">
-                <div className="flex-1 flex flex-col">
-                    <GuardrailRail
-                        stage="input"
-                        attachments={inputNode.guardrails || []}
-                        descriptors={descriptors}
-                        onChange={(g) => patchRail("input", g)}
-                    />
-                    <div className="flex-1 bg-gray-50">
-                        <Canvas
-                            spec={spec}
-                            selectedNodeId={selectedNodeId}
-                            onChange={patchSpec}
-                            onSelect={setSelectedNodeId}
-                        />
-                    </div>
-                    <GuardrailRail
-                        stage="output"
-                        attachments={outputNode.guardrails || []}
-                        descriptors={descriptors}
-                        onChange={(g) => patchRail("output", g)}
-                    />
-                </div>
-                {selectedNode && (
-                    <div className="w-[360px] border-l border-gray-200 bg-white overflow-y-auto">
-                        <NodeInspector node={selectedNode} onChange={patchNode} />
-                    </div>
-                )}
+            {/* Tab bar */}
+            <div className="flex border-b border-gray-200 bg-white px-4">
+                <button
+                    onClick={() => setTab("graph")}
+                    className={`px-3 py-2 text-sm border-b-2 ${
+                        tab === "graph"
+                            ? "border-amber-600 text-amber-700 font-semibold"
+                            : "border-transparent text-gray-500 hover:text-gray-700"
+                    }`}
+                >
+                    Graph
+                </button>
+                <button
+                    onClick={() => setTab("evals")}
+                    className={`px-3 py-2 text-sm border-b-2 ${
+                        tab === "evals"
+                            ? "border-amber-600 text-amber-700 font-semibold"
+                            : "border-transparent text-gray-500 hover:text-gray-700"
+                    }`}
+                >
+                    Evals
+                </button>
             </div>
 
-            {/* Test runner */}
-            <TestRunner agentId={id} />
+            {tab === "graph" ? (
+                <>
+                    {/* Canvas + side panel */}
+                    <div className="flex flex-1 overflow-hidden">
+                        <div className="flex-1 flex flex-col">
+                            <GuardrailRail
+                                stage="input"
+                                attachments={inputNode.guardrails || []}
+                                descriptors={descriptors}
+                                onChange={(g) => patchRail("input", g)}
+                            />
+                            <div className="flex-1 bg-gray-50">
+                                <Canvas
+                                    spec={spec}
+                                    selectedNodeId={selectedNodeId}
+                                    onChange={patchSpec}
+                                    onSelect={setSelectedNodeId}
+                                />
+                            </div>
+                            <GuardrailRail
+                                stage="output"
+                                attachments={outputNode.guardrails || []}
+                                descriptors={descriptors}
+                                onChange={(g) => patchRail("output", g)}
+                            />
+                        </div>
+                        {selectedNode && (
+                            <div className="w-[360px] border-l border-gray-200 bg-white overflow-y-auto">
+                                <NodeInspector node={selectedNode} onChange={patchNode} />
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Test runner */}
+                    <TestRunner agentId={id} />
+                </>
+            ) : (
+                <div className="flex-1 overflow-hidden bg-white">
+                    <EvalsTab agentId={id} />
+                </div>
+            )}
         </div>
     );
 }
