@@ -13,6 +13,7 @@ from app.composed_agents.guardrails import (  # noqa: F401
     pii_redactor,
     prompt_judge,
     schema_validator,
+    sub_agent,
 )
 
 __all__ = ["Guardrail", "get", "list_all", "register"]

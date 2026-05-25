@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { Play, Loader2, BookmarkPlus, Plus, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Play, Loader2, BookmarkPlus, Plus, X, RefreshCw } from "lucide-react";
 import {
     composedAgentsApi,
+    type ComposedAgent,
     type GuardrailAttachment,
     type GuardrailDescriptor,
     type GuardrailRunResult,
@@ -119,6 +120,12 @@ export default function GuardrailConfigForm({
                     setCfg={setCfg}
                     stage={stage}
                     descriptors={descriptors || []}
+                />
+            )}
+            {descriptor.id === "sub_agent" && (
+                <SubAgentForm
+                    attachment={attachment}
+                    onChange={onChange}
                 />
             )}
 
@@ -419,6 +426,154 @@ function GroupForm({
                     </div>
                 </div>
             )}
+        </div>
+    );
+}
+
+
+function SubAgentForm({
+    attachment,
+    onChange,
+}: {
+    attachment: GuardrailAttachment;
+    onChange: (a: GuardrailAttachment) => void;
+}) {
+    const cfg = attachment.config || {};
+    const [agents, setAgents] = useState<ComposedAgent[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [resnapBusy, setResnapBusy] = useState(false);
+
+    useEffect(() => {
+        composedAgentsApi
+            .list()
+            .then(setAgents)
+            .catch(console.error)
+            .finally(() => setLoading(false));
+    }, []);
+
+    const sourceId = cfg.source_agent_id || null;
+    const source = agents.find((a) => a.id === sourceId);
+    const driftDetected =
+        source && cfg.source_version != null && source.version !== cfg.source_version;
+
+    function pickSource(agent: ComposedAgent) {
+        onChange({
+            ...attachment,
+            config: {
+                ...cfg,
+                graph_spec: agent.graph_spec,
+                source_agent_id: agent.id,
+                source_version: agent.version,
+            },
+        });
+    }
+
+    async function resnap() {
+        if (!sourceId) return;
+        setResnapBusy(true);
+        try {
+            const fresh = await composedAgentsApi.get(sourceId);
+            onChange({
+                ...attachment,
+                config: {
+                    ...cfg,
+                    graph_spec: fresh.graph_spec,
+                    source_agent_id: fresh.id,
+                    source_version: fresh.version,
+                },
+            });
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setResnapBusy(false);
+        }
+    }
+
+    return (
+        <div className="space-y-3">
+            <div>
+                <label className="block text-xs text-gray-500 mb-1">
+                    Source composed agent
+                </label>
+                {loading ? (
+                    <div className="text-xs text-gray-500">Loading…</div>
+                ) : (
+                    <select
+                        value={sourceId || ""}
+                        onChange={(e) => {
+                            const ag = agents.find((a) => a.id === e.target.value);
+                            if (ag) pickSource(ag);
+                        }}
+                        className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
+                    >
+                        <option value="">— Choose an agent to snapshot —</option>
+                        {agents.map((a) => (
+                            <option key={a.id} value={a.id}>
+                                {a.name} (v{a.version})
+                            </option>
+                        ))}
+                    </select>
+                )}
+                {source && (
+                    <div className="flex items-center gap-2 mt-1 text-xs">
+                        <span className="text-gray-500">
+                            Snapshot: v{cfg.source_version} of "{source.name}"
+                        </span>
+                        {driftDetected && (
+                            <button
+                                onClick={resnap}
+                                disabled={resnapBusy}
+                                className="flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-800 rounded border border-amber-300 hover:bg-amber-200 disabled:opacity-40"
+                            >
+                                {resnapBusy ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                    <RefreshCw className="w-3 h-3" />
+                                )}
+                                Source is now v{source.version} — re-snapshot
+                            </button>
+                        )}
+                    </div>
+                )}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+                <div>
+                    <label className="block text-xs text-gray-500 mb-1">Stage</label>
+                    <select
+                        value={cfg.stage || "output"}
+                        onChange={(e) =>
+                            onChange({
+                                ...attachment,
+                                config: { ...cfg, stage: e.target.value },
+                            })
+                        }
+                        className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
+                    >
+                        <option value="input">input</option>
+                        <option value="output">output</option>
+                    </select>
+                </div>
+                <div>
+                    <label className="block text-xs text-gray-500 mb-1">On fail</label>
+                    <select
+                        value={cfg.action || "reject"}
+                        onChange={(e) =>
+                            onChange({
+                                ...attachment,
+                                config: { ...cfg, action: e.target.value },
+                            })
+                        }
+                        className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
+                    >
+                        <option value="reject">reject</option>
+                        <option value="warn">warn</option>
+                    </select>
+                </div>
+            </div>
+            <div className="text-xs text-gray-500 italic">
+                The source agent's final assistant message must be JSON of shape{" "}
+                <code>{`{verdict: "PASS"|"FAIL", reason, confidence}`}</code>.
+            </div>
         </div>
     );
 }

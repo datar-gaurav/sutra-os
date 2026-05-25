@@ -340,5 +340,9 @@ function defaultConfigFor(d: GuardrailDescriptor): Record<string, any> {
     if (d.id === "group") {
         return { mode: "ALL", children: [] };
     }
+    if (d.id === "sub_agent") {
+        // graph_spec gets filled in when the user picks a source agent.
+        return { stage: "output", action: "reject", min_confidence: 0 };
+    }
     return {};
 }
