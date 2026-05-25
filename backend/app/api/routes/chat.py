@@ -10,6 +10,7 @@ from sqlalchemy import delete, select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import ChatRequest, ChatResponse
+from app.composed_agents.runner import run_once as composed_run_once
 from app.core.agent_manager import agent_manager
 from app.core.conversation_window import get_windowed_history
 from app.core.orchestrator import orchestrator
@@ -17,7 +18,9 @@ from app.config import settings
 from app.core.rate_limiter import limiter
 from app.db.session import async_session_factory, get_db
 from app.models.agent import Agent
+from app.models.composed_agent import ComposedAgent
 from app.models.conversation import Conversation, Message
+from app.models.guardrail_event import GuardrailEvent
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -79,13 +82,121 @@ async def _auto_extract_memories(
         ))
 
 
+async def _chat_with_composed_agent(
+    composed: ComposedAgent,
+    payload: ChatRequest,
+    db: AsyncSession,
+) -> ChatResponse:
+    """Run a composed agent through the chat surface.
+
+    Reuses the same Conversation / Message persistence as the monolithic path
+    so chat history is uniform. Memory injection is intentionally skipped for
+    this slice — the composed agent's graph_spec is the source of truth for
+    behavior. Streaming returns the full response as a single chunk; LangGraph
+    node-level streaming is a follow-up.
+    """
+    # Conversation lifecycle — mirror the monolithic path.
+    if payload.conversation_id:
+        conversation = await db.get(Conversation, payload.conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    else:
+        conversation = Conversation(
+            agent_id=composed.id,
+            title=payload.message[:100],
+            source="ui",
+        )
+        db.add(conversation)
+        await db.flush()
+        await db.refresh(conversation)
+
+    user_msg = Message(
+        conversation_id=conversation.id,
+        role="user",
+        content=payload.message,
+    )
+    db.add(user_msg)
+    await db.flush()
+
+    # Compose the input: prior assistant/user messages concatenated as a single
+    # multi-turn string. Composed agents currently take one input; future
+    # work can rebuild a true message list.
+    chat_history = await get_windowed_history(db, conversation.id, exclude_last=True)
+    if chat_history:
+        history_text = "\n\n".join(
+            f"{m.get('role', '?').upper()}: {m.get('content', '')}" for m in chat_history
+        )
+        effective = f"{history_text}\n\nUSER: {payload.message}"
+    else:
+        effective = payload.message
+
+    try:
+        run_id, final = await composed_run_once(
+            composed.id, composed.version, composed.graph_spec, effective
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Composed agent run failed: {exc}")
+
+    messages = final.get("messages") or []
+    last = messages[-1] if messages else None
+    output = ""
+    if last is not None:
+        c = last.content
+        if isinstance(c, str):
+            output = c
+        elif isinstance(c, list):
+            output = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in c)
+
+    # Persist the audit log inline (mirrors the /run endpoint).
+    try:
+        for g in (final.get("guardrail_results") or []):
+            db.add(
+                GuardrailEvent(
+                    composed_agent_id=composed.id,
+                    run_id=run_id,
+                    guardrail_id=g.guardrail_id,
+                    stage=g.stage,
+                    action=g.action,
+                    passed=g.passed,
+                    reason=g.reason,
+                    score=g.score,
+                    latency_ms=g.latency_ms,
+                )
+            )
+        await db.flush()
+    except Exception:
+        # Audit-log write is best-effort; the chat reply still goes through.
+        pass
+
+    assistant_msg = Message(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=output,
+    )
+    db.add(assistant_msg)
+    await db.flush()
+    await db.refresh(assistant_msg)
+
+    return ChatResponse(
+        conversation_id=conversation.id,
+        message_id=assistant_msg.id,
+        content=output,
+        tool_calls=None,
+    )
+
+
 @router.post("/", response_model=ChatResponse)
 @limiter.limit(lambda: settings.rate_limit_chat)
 async def chat(request: Request, payload: ChatRequest, db: AsyncSession = Depends(get_db)):
     """Send a message to an agent and get a response."""
-    # Validate agent exists and is running
+    # Resolve the id: monolithic Agent OR ComposedAgent. The two tables share
+    # the same id space (uuid), but ids never collide because they're generated
+    # independently.
     agent = await db.get(Agent, payload.agent_id)
     if not agent:
+        composed = await db.get(ComposedAgent, payload.agent_id)
+        if composed is not None:
+            return await _chat_with_composed_agent(composed, payload, db)
         raise HTTPException(status_code=404, detail="Agent not found")
     if not agent_manager.is_running(payload.agent_id):
         raise HTTPException(status_code=400, detail="Agent is not running. Start it first.")

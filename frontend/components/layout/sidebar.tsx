@@ -46,6 +46,7 @@ const NAV_GROUPS: NavGroup[] = [
         items: [
             { href: "/analytics", label: "Analytics", icon: BarChart3 },
             { href: "/agents", label: "Agents", icon: Bot },
+            { href: "/composed-agents", label: "Composed Agents", icon: ShieldCheck },
             { href: "/templates", label: "Templates", icon: Package },
             { href: "/skills", label: "Skills", icon: Sparkles },
             { href: "/chat", label: "Chat", icon: MessageSquare },
