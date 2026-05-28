@@ -1,11 +1,10 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import {
     ReactFlow,
     Controls,
     Background,
-    applyNodeChanges,
     applyEdgeChanges,
     addEdge,
     type Connection,
@@ -34,6 +33,10 @@ const defaultEdgeOptions = {
 };
 
 export default function Canvas({ spec, selectedNodeId, onChange, onSelect }: CanvasProps) {
+    // Always-current ref so position-change callbacks never read a stale spec.
+    const specRef = useRef(spec);
+    specRef.current = spec;
+
     // Convert backend GraphSpec -> React Flow nodes/edges.
     const rfNodes: Node[] = useMemo(
         () =>
@@ -68,19 +71,24 @@ export default function Canvas({ spec, selectedNodeId, onChange, onSelect }: Can
 
     const onNodesChange = useCallback(
         (changes: NodeChange[]) => {
-            const updated = applyNodeChanges(changes, rfNodes);
-            // Only flush position changes back to the spec (selection lives in parent state).
-            const next: ComposedAgentNode[] = spec.nodes.map((n) => {
-                const m = updated.find((u) => u.id === n.id);
-                if (!m) return n;
-                return {
-                    ...n,
-                    ui: { ...n.ui, position: m.position },
-                };
-            });
-            onChange({ ...spec, nodes: next });
+            // Only flush drag-end position changes to the spec; dimension/select/remove
+            // changes are internal to React Flow and must NOT call onChange, because doing
+            // so with a stale spec closure drops nodes that were just added via addLLMNode.
+            const posChanges = changes.filter(
+                (c): c is Extract<NodeChange, { type: "position" }> =>
+                    c.type === "position" && !(c as any).dragging
+            );
+            if (!posChanges.length) return;
+            const currentSpec = specRef.current;
+            const posById = Object.fromEntries(
+                posChanges.filter((c) => c.position).map((c) => [c.id, c.position!])
+            );
+            const next: ComposedAgentNode[] = currentSpec.nodes.map((n) =>
+                posById[n.id] ? { ...n, ui: { ...n.ui, position: posById[n.id] } } : n
+            );
+            onChange({ ...currentSpec, nodes: next });
         },
-        [rfNodes, spec, onChange]
+        [onChange]
     );
 
     const onEdgesChange = useCallback(
