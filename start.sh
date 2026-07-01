@@ -53,9 +53,11 @@ docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>&1 | gre
 
 # ── Host bridges (macOS launchd agents) — start with the app ────────────────
 # Host-only I/O the containers can't do: Smart Organizer (Mail/Reminders/Notes,
-# :7477) and the Fleet worker (Gemini CLI, :7476). Loaded here so they come up
-# with ./start.sh; ./stop.sh tears them down. KeepAlive restarts them on crash
-# while loaded.
+# :7477) and the Fleet worker (Gemini CLI, :7476). Rendered plists live in
+# scripts/launchd/ (NOT ~/Library/LaunchAgents), so they do NOT auto-start at
+# login — their lifecycle is tied to ./start.sh and ./stop.sh. Loaded by full
+# path here; KeepAlive restarts them on crash while the app is up.
+LAUNCHD_DIR="$PROJECT_DIR/scripts/launchd"
 start_bridge() {
     # $1=label  $2=plist  $3=health-url  $4=name  $5=logpath
     local label="$1" plist="$2" url="$3" name="$4" log="$5"
@@ -76,11 +78,11 @@ start_bridge() {
 
 echo ""
 start_bridge com.sutra.smart-organizer-bridge \
-    "$HOME/Library/LaunchAgents/com.sutra.smart-organizer-bridge.plist" \
+    "$LAUNCHD_DIR/com.sutra.smart-organizer-bridge.plist" \
     "http://127.0.0.1:7477/health" "Smart Organizer bridge" "~/Library/Logs/sutra-smart-organizer.log"
 
 # Fleet worker (only if user opted in during install)
-FLEET_PLIST="$HOME/Library/LaunchAgents/com.sutra.fleet-worker.plist"
+FLEET_PLIST="$LAUNCHD_DIR/com.sutra.fleet-worker.plist"
 if [ -f "$FLEET_PLIST" ]; then
     start_bridge com.sutra.fleet-worker "$FLEET_PLIST" \
         "http://127.0.0.1:7476/health" "Fleet worker" "~/Library/Logs/sutra-fleet.log"
