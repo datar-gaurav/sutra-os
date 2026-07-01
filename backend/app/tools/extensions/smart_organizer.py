@@ -5,25 +5,33 @@ Reminders, logs important-but-non-actionable items to a daily Apple Note, and
 learns per-user importance over time — while keeping ~90%+ of processing on
 local models and reserving frontier calls for low-confidence/high-stakes items.
 
-This file is PR #1 (the scaffold): manifest, config plumbing, the plugin-local
-SQLite store bootstrap, and stub tools with their final signatures. The tier
-logic (ingest, classify, escalate, route, feedback) lands in later PRs.
+Architecture (Docker-aware)
+---------------------------
+The Sutra backend runs in a Linux container, which cannot reach macOS apps
+(`osascript`, Mail, Reminders, Notes) or `~/Library/Mail`. So this extension is
+a thin **bridge client**: all intelligence + state live here (classification,
+priors, few-shot, the plugin SQLite store), while the macOS I/O is delegated to
+a host-side daemon — `scripts/smart_organizer_bridge.py` — over
+`http://host.docker.internal:PORT` with a shared bearer token, mirroring the
+`runtime_scripts` / `dispatcher_bridge.py` pattern. Configure:
+  - bridge_url   (config)      — e.g. http://host.docker.internal:7476
+  - bridge_token (credential)  — shared token, set by install.sh
 
 LLM configuration
 -----------------
-Unlike a plugin-scoped model dropdown, every model call routes through Sutra's
-existing purpose-based LLM settings and keys. Configure two LLM Purposes and
-reference them here:
+Every model call routes through Sutra's existing purpose-based LLM settings and
+keys. Configure two LLM Purposes and reference them here:
   - batch_purpose_id    → Tier 1 local classify/extract (point slots at Ollama)
   - frontier_purpose_id → Tier 3 escalation (system-wide default frontier)
-The extension therefore holds no provider API keys of its own; rate limits,
-fallback chains, and circuit breaking come for free via the smart router.
+The extension holds no provider API keys of its own; rate limits, fallback
+chains, and circuit breaking come for free via the smart router.
 
-Apple Mail real-time trigger (set up once, macOS)
--------------------------------------------------
-Mail ▸ Settings ▸ Rules ▸ add a rule matching "Every Message" whose action runs
-an AppleScript that calls the arrival handler (wired in a later PR). Non-urgent
-mail is drained on the batch cadence; urgent mail is triaged immediately.
+Scheduling
+----------
+The batch cycle reuses the existing container-side Job scheduler: create a Job
+(execution_type='prompt', cron e.g. "0 */4 * * *") targeting a Smart-Organizer-
+enabled agent. Real-time urgency is driven by a Mail.app rule that posts to the
+host bridge's /arrival endpoint.
 
 Provides:
   - smart_organizer_ingest:           Tier 0 — read new mail, filter, enqueue
@@ -41,9 +49,7 @@ import logging
 import os
 import re
 import sqlite3
-import subprocess
-import sys
-from datetime import datetime, timezone
+from typing import Any
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -62,10 +68,23 @@ EXTENSION_MANIFEST = {
     "icon": "inbox",
     "version": "0.1.0",
     "author": "Gaurav Datar",
-    # No secrets: local Ollama + AppleScript need none; frontier keys come from
-    # the referenced LLM Purpose, not from this extension.
-    "credential_fields": [],
+    # The only secret is the shared token for the host bridge daemon; frontier
+    # keys come from the referenced LLM Purpose, not from this extension.
+    "credential_fields": [
+        {
+            "key": "bridge_token",
+            "label": "Host Bridge Token",
+            "secret": True,
+            "placeholder": "Shared bearer token (SMART_ORGANIZER_BRIDGE_TOKEN, set by install.sh)",
+        },
+    ],
     "config_fields": [
+        {
+            "key": "bridge_url",
+            "label": "Host Bridge URL",
+            "secret": False,
+            "placeholder": "http://host.docker.internal:7476",
+        },
         {
             "key": "batch_purpose_id",
             "label": "Batch LLM Purpose (Tier 1, local)",
@@ -122,9 +141,9 @@ EXTENSION_MANIFEST = {
         },
         {
             "key": "sqlite_path",
-            "label": "Plugin data store path",
+            "label": "Plugin data store path (in-container)",
             "secret": False,
-            "placeholder": "~/.sutra/smart_organizer.db",
+            "placeholder": ".local/smart_organizer/smart_organizer.db",
         },
         {
             "key": "log_retention_days",
@@ -146,7 +165,7 @@ EXTENSION_MANIFEST = {
 }
 
 # ─── Defaults (all overridable via config_fields) ────────────────────────────
-DEFAULT_SQLITE_PATH = "~/.sutra/smart_organizer.db"
+DEFAULT_SQLITE_PATH = ".local/smart_organizer/smart_organizer.db"
 DEFAULT_CONFIDENCE_THRESHOLD = 0.7
 DEFAULT_BATCH_CADENCE_HOURS = 4
 DEFAULT_URGENCY_WINDOW_HOURS = 2
@@ -247,6 +266,88 @@ async def _get_config(agent_id: str) -> dict:
     return dict(row.extra_config or {})
 
 
+# ─── Host bridge client (macOS I/O over http://host.docker.internal:PORT) ─────
+async def _get_bridge(agent_id: str) -> tuple[str, str]:
+    """Return (bridge_url, bridge_token) from the integration row."""
+    from sqlalchemy import nullslast, select
+
+    from app.core.vault import decrypt_secret
+    from app.db.session import async_session_factory
+    from app.models.integration import Integration
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Integration)
+            .where(Integration.type == EXTENSION_ID, Integration.is_active == True)  # noqa: E712
+            .order_by(nullslast(Integration.agent_id.desc()))
+        )
+        rows = result.scalars().all()
+
+    agent_specific = next((r for r in rows if r.agent_id == agent_id), None)
+    system_wide = next((r for r in rows if r.agent_id is None), None)
+    row = agent_specific or system_wide
+    if not row:
+        raise ValueError(f"No active '{EXTENSION_ID}' integration found.")
+
+    url = ((row.extra_config or {}).get("bridge_url") or "").rstrip("/")
+    if not url:
+        raise ValueError(
+            "Smart Organizer integration is missing bridge_url. Set it in "
+            "Settings > Integrations (e.g. http://host.docker.internal:7476)."
+        )
+    token = ""
+    if row.credentials_enc:
+        try:
+            token = json.loads(decrypt_secret(row.credentials_enc)).get("bridge_token") or ""
+        except Exception:  # noqa: BLE001
+            pass
+    return url, token
+
+
+async def _call_bridge(
+    method: str,
+    path: str,
+    agent_id: str,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+    timeout: float = 20.0,
+) -> Any:
+    """Call the host bridge with auth and one retry on network errors."""
+    import httpx
+
+    url, token = await _get_bridge(agent_id)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    full_url = f"{url}{path}"
+
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                if method == "GET":
+                    resp = await client.get(full_url, headers=headers, params=params)
+                else:
+                    resp = await client.post(full_url, headers=headers, json=json_body or {})
+            break
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            last_exc = exc
+            if attempt == 0:
+                continue
+            raise ValueError(
+                f"Host bridge unreachable at {url} — is scripts/smart_organizer_bridge.py "
+                "running on the host?"
+            ) from exc
+
+    if resp.status_code == 401:
+        raise ValueError("Host bridge rejected the token (401) — check SMART_ORGANIZER_BRIDGE_TOKEN.")
+    if not resp.is_success:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:  # noqa: BLE001
+            detail = resp.text
+        raise ValueError(f"Host bridge error {resp.status_code}: {detail}")
+    return resp.json()
+
+
 def _resolve_sqlite_path(config: dict) -> Path:
     raw = (config.get("sqlite_path") or "").strip() or DEFAULT_SQLITE_PATH
     return Path(os.path.expanduser(raw))
@@ -298,22 +399,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE classifications ADD COLUMN {name} {decl}")
 
 
-def _envelope_index_path() -> Path | None:
-    """Best-effort locate the Mail.app Envelope Index (macOS only)."""
-    if sys.platform != "darwin":
-        return None
-    mail_root = Path(os.path.expanduser("~/Library/Mail"))
-    if not mail_root.exists():
-        return None
-    matches = sorted(mail_root.glob("V*/MailData/Envelope Index"))
-    return matches[-1] if matches else None
-
-
 # ─── Tier 0: rule engine (pure, unit-testable) ───────────────────────────────
-# Apple stores dates as CFAbsoluteTime (seconds since 2001-01-01 UTC).
-_APPLE_EPOCH_OFFSET = 978307200  # seconds between 1970-01-01 and 2001-01-01
-
-
 def _parse_lines(raw: str | None) -> list[str]:
     """Split a newline-delimited config textarea into trimmed, non-empty lines."""
     if not raw:
@@ -363,92 +449,34 @@ def evaluate_rules(sender: str, subject: str, config: dict) -> tuple[str, str]:
     return "keep", "default"
 
 
-# ─── Tier 0: Apple Mail Envelope Index reader (read-only, macOS) ──────────────
-def _apple_time_to_iso(value) -> str | None:
-    """Convert an Envelope Index timestamp to an ISO-8601 UTC string, tolerantly.
+# ─── Tier 0: new mail via host bridge ────────────────────────────────────────
+async def _bridge_get_new_mail(agent_id: str, after_rowid: int, limit: int) -> list[dict]:
+    """Fetch new messages (ROWID > after_rowid) from the host bridge.
 
-    Values are typically CFAbsoluteTime (seconds since 2001). Some rows/versions
-    already store Unix epoch; distinguish by magnitude.
+    The bridge reads Mail's Envelope Index on the host and returns dicts with
+    rowid, message_id, sender, subject, received_at (ISO 8601), and read.
     """
+    data = await _call_bridge(
+        "GET", "/mail/new", agent_id,
+        params={"after": after_rowid, "limit": max(1, limit)},
+    )
+    if isinstance(data, dict):
+        return data.get("messages", [])
+    return data or []
+
+
+async def _bridge_get_body(agent_id: str, message_id: str) -> str:
+    """Fetch a stripped message body from the host bridge; "" on any failure."""
+    if not message_id or message_id.startswith("rowid:"):
+        return ""
     try:
-        ts = float(value)
-    except (TypeError, ValueError):
-        return None
-    if ts <= 0:
-        return None
-    # A post-2001 CFAbsoluteTime is smaller than the equivalent Unix epoch by
-    # the offset; anything already larger than a 2001 Unix epoch is Unix.
-    if ts < _APPLE_EPOCH_OFFSET:
-        ts += _APPLE_EPOCH_OFFSET
-    try:
-        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-    except (OverflowError, OSError, ValueError):
-        return None
-
-
-def _open_envelope_ro(path: Path) -> sqlite3.Connection:
-    """Open the Envelope Index read-only, tolerating Mail's live locks."""
-    try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    except sqlite3.OperationalError:
-        # Fall back to immutable if the live DB is locked (may miss WAL tail).
-        conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _read_envelope_messages(after_rowid: int, limit: int) -> list[dict]:
-    """Return new messages (ROWID > after_rowid) from the Mail Envelope Index.
-
-    Adapts to schema variation by inspecting available columns. Returns [] if
-    Mail is unavailable or the schema can't be read (caller degrades gracefully).
-    """
-    env_path = _envelope_index_path()
-    if env_path is None:
-        return []
-
-    conn = _open_envelope_ro(env_path)
-    try:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
-        if not {"sender", "subject", "date_received"} <= cols:
-            logger.warning("smart_organizer: unexpected Envelope Index schema: %s", sorted(cols))
-            return []
-        msg_id_expr = "m.message_id" if "message_id" in cols else "NULL"
-        read_expr = "m.read" if "read" in cols else "NULL"
-        query = f"""
-            SELECT m.ROWID           AS rowid,
-                   {msg_id_expr}     AS message_id,
-                   a.address         AS sender,
-                   s.subject         AS subject,
-                   m.date_received   AS date_received,
-                   {read_expr}       AS read_flag
-            FROM messages m
-            LEFT JOIN addresses a ON a.ROWID = m.sender
-            LEFT JOIN subjects  s ON s.ROWID = m.subject
-            WHERE m.ROWID > ?
-            ORDER BY m.ROWID ASC
-            LIMIT ?
-        """
-        rows = conn.execute(query, (after_rowid, max(1, limit))).fetchall()
-    except sqlite3.Error as e:
-        logger.warning("smart_organizer: Envelope Index read failed: %s", e)
-        return []
-    finally:
-        conn.close()
-
-    out: list[dict] = []
-    for r in rows:
-        out.append(
-            {
-                "rowid": r["rowid"],
-                "message_id": r["message_id"] or f"rowid:{r['rowid']}",
-                "sender": r["sender"] or "",
-                "subject": r["subject"] or "",
-                "received_at": _apple_time_to_iso(r["date_received"]),
-                "read": bool(r["read_flag"]) if r["read_flag"] is not None else None,
-            }
+        data = await _call_bridge(
+            "GET", "/mail/body", agent_id, params={"message_id": message_id}
         )
-    return out
+    except ValueError as e:
+        logger.debug("smart_organizer: body fetch failed for %s: %s", message_id, e)
+        return ""
+    return (data.get("body") if isinstance(data, dict) else "") or ""
 
 
 # ─── Plugin-store helpers ────────────────────────────────────────────────────
@@ -467,38 +495,6 @@ def _meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 # ─── Tier 1: classification & extraction ─────────────────────────────────────
 LABELS = ("Actionable", "Important-FYI", "Junk")
-_BODY_SNIPPET_CHARS = 1500
-
-
-def _fetch_body_applescript(message_id: str, timeout: float = 6.0) -> str:
-    """Fetch a message body via Mail.app scripting (macOS). Best-effort → "".
-
-    Matches on the RFC message id stored in the Envelope Index. Returns a
-    stripped, truncated snippet; empty string on any failure so callers can
-    fall back to the subject.
-    """
-    if sys.platform != "darwin" or message_id.startswith("rowid:"):
-        return ""
-    mid = message_id.strip().lstrip("<").rstrip(">")
-    script = (
-        'tell application "Mail"\n'
-        f'  set matches to (every message of inbox whose message id is "{mid}")\n'
-        "  if matches is {} then return \"\"\n"
-        "  return content of item 1 of matches\n"
-        "end tell"
-    )
-    try:
-        proc = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.debug("smart_organizer: body fetch failed for %s: %s", message_id, e)
-        return ""
-    body = (proc.stdout or "").strip()
-    return body[:_BODY_SNIPPET_CHARS]
 
 
 def _load_sender_priors(conn: sqlite3.Connection, senders: list[str]) -> dict[str, float]:
@@ -831,95 +827,49 @@ def _mark_all_review(config: dict, candidates: list[tuple[dict, str]]) -> int:
     return len(candidates)
 
 
-# ─── Output routing: Apple Reminders + daily Apple Note (macOS) ───────────────
-_REMINDER_JXA = """
-function run(argv) {
-  var title = argv[0]; var due = argv[1] || "";
-  var app = Application("Reminders");
-  var r = app.Reminder({name: title});
-  app.defaultList().reminders.push(r);
-  if (due) { var d = new Date(due); if (!isNaN(d.getTime())) { r.dueDate = d; } }
-  return r.id();
-}
-"""
-
-# Returns "completed" / "open" for a known reminder id, "missing" if deleted.
-_REMINDER_STATUS_JXA = """
-function run(argv) {
-  var id = argv[0];
-  var app = Application("Reminders");
-  try {
-    var r = app.reminders.byId(id);
-    return r.completed() ? "completed" : "open";
-  } catch (e) { return "missing"; }
-}
-"""
-
-_NOTE_JXA = """
-function run(argv) {
-  var noteName = argv[0]; var line = argv[1];
-  var app = Application("Notes");
-  var esc = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  var notes = app.notes;
-  for (var i = 0; i < notes.length; i++) {
-    if (notes[i].name() === noteName) {
-      notes[i].body = notes[i].body() + "<div>" + esc + "</div>";
-      return "appended";
-    }
-  }
-  var n = app.Note({name: noteName, body: "<div><b>" + noteName + "</b></div><div>" + esc + "</div>"});
-  app.defaultAccount().notes.push(n);
-  return "created";
-}
-"""
-
-
-def _osa_jxa(script: str, args: list[str], timeout: float = 8.0) -> tuple[bool, str]:
-    """Run a JavaScript-for-Automation script with argv (macOS). Best-effort."""
-    if sys.platform != "darwin":
-        return False, "not macOS"
+# ─── Output routing seams (via host bridge) ──────────────────────────────────
+async def _bridge_create_reminder(
+    agent_id: str, title: str, due_iso: str | None
+) -> tuple[bool, str]:
+    """Create a reminder on the host; returns (ok, reminder_id)."""
     try:
-        proc = subprocess.run(
-            ["osascript", "-l", "JavaScript", "-e", script, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+        data = await _call_bridge(
+            "POST", "/reminders", agent_id,
+            json_body={"title": title or "(no subject)", "due": due_iso or ""},
         )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return False, str(e)
-    if proc.returncode != 0:
-        return False, (proc.stderr or "").strip()
-    return True, (proc.stdout or "").strip()
+    except ValueError as e:
+        logger.warning("smart_organizer: reminder creation failed: %s", e)
+        return False, ""
+    if not isinstance(data, dict):
+        return False, ""
+    return bool(data.get("ok", False)), (data.get("id") or "")
 
 
-def _daily_note_name() -> str:
-    return f"Sutra Daily Digest — {datetime.now().date().isoformat()}"
+async def _bridge_append_note(agent_id: str, line: str) -> bool:
+    """Append a line to today's digest note on the host."""
+    try:
+        data = await _call_bridge("POST", "/notes/append", agent_id, json_body={"line": line})
+    except ValueError as e:
+        logger.warning("smart_organizer: note append failed: %s", e)
+        return False
+    return bool(data.get("ok", True)) if isinstance(data, dict) else True
 
 
-def _create_reminder(title: str, due_iso: str | None) -> tuple[bool, str]:
-    """Create a reminder; returns (ok, reminder_id) — id enables implicit feedback."""
-    ok, out = _osa_jxa(_REMINDER_JXA, [title or "(no subject)", due_iso or ""])
-    if not ok and sys.platform == "darwin":
-        logger.warning("smart_organizer: reminder creation failed: %s", out)
-    return ok, (out if ok else "")
-
-
-def _reminder_status(reminder_id: str) -> str:
+async def _bridge_reminder_status(agent_id: str, reminder_id: str) -> str:
     """Return 'completed' | 'open' | 'missing' | 'unknown' for a reminder id."""
     if not reminder_id:
         return "unknown"
-    ok, out = _osa_jxa(_REMINDER_STATUS_JXA, [reminder_id])
-    return out if ok and out in ("completed", "open", "missing") else "unknown"
+    try:
+        data = await _call_bridge(
+            "GET", "/reminders/status", agent_id, params={"id": reminder_id}
+        )
+    except ValueError:
+        return "unknown"
+    status = (data.get("status") if isinstance(data, dict) else "") or ""
+    return status if status in ("completed", "open", "missing") else "unknown"
 
 
-def _append_to_note(line: str) -> bool:
-    ok, err = _osa_jxa(_NOTE_JXA, [_daily_note_name(), line])
-    if not ok and sys.platform == "darwin":
-        logger.warning("smart_organizer: note append failed: %s", err)
-    return ok
-
-
-def _route_classified(config: dict, limit: int = 200) -> dict[str, int]:
+async def _route_classified(config: dict, agent_id: str, limit: int = 200) -> dict[str, int]:
     """Route already-classified items to Reminders / the daily Note / audit.
 
     Operates on queue rows in state 'classified' (independent of which run
@@ -947,15 +897,17 @@ def _route_classified(config: dict, limit: int = 200) -> dict[str, int]:
             headline = r["summary"] or r["subject"] or "(no subject)"
             reminder_id = ""
             if r["needs_review"]:
-                ok = _append_to_note(f"[needs review] {label or '?'} — {r['sender']}: {headline}")
+                ok = await _bridge_append_note(
+                    agent_id, f"[needs review] {label or '?'} — {r['sender']}: {headline}"
+                )
                 bucket, decision = "review", "route:fyi-review"
             elif label == "Actionable":
-                ok, reminder_id = _create_reminder(headline, r["due_date"])
+                ok, reminder_id = await _bridge_create_reminder(agent_id, headline, r["due_date"])
                 bucket, decision = "reminders", "route:reminder"
             elif label == "Junk":
                 ok, bucket, decision = True, "junk", "route:junk-discard"
             else:  # Important-FYI (and any unexpected label) → digest
-                ok = _append_to_note(f"{r['sender']}: {headline}")
+                ok = await _bridge_append_note(agent_id, f"{r['sender']}: {headline}")
                 bucket, decision = "fyi", "route:fyi"
 
             if ok:
@@ -993,7 +945,7 @@ def _format_routing(counts: dict[str, int]) -> str:
 
 
 # ─── Feedback loop ───────────────────────────────────────────────────────────
-def _scan_reminder_feedback(config: dict) -> dict[str, int]:
+async def _scan_reminder_feedback(config: dict, agent_id: str) -> dict[str, int]:
     """Harvest implicit feedback from Reminders state (FR-23), best-effort.
 
     For routed Actionable items with a known reminder id that haven't been
@@ -1012,7 +964,7 @@ def _scan_reminder_feedback(config: dict) -> dict[str, int]:
             "AND c.reminder_scanned=0"
         ).fetchall()
         for r in rows:
-            status = _reminder_status(r["reminder_id"])
+            status = await _bridge_reminder_status(agent_id, r["reminder_id"])
             if status in ("unknown", "open"):
                 continue  # can't tell yet — re-check next time
             if status == "completed":
@@ -1058,29 +1010,32 @@ def create_tools(agent_id: str):
         """Tier 0 — read newly-arrived Apple Mail, apply the discard rules, and
         enqueue survivors for the next batch cycle.
 
-        Reads message metadata (sender, subject, date) from Mail's local
-        Envelope Index without invoking any LLM, applies the configured
-        allow/block/regex rules, discards junk (logged for audit), and queues
-        the rest for Tier 1 classification. Only messages newer than the last
-        ingest are considered.
+        Reads message metadata (sender, subject, date) from Mail's Envelope
+        Index via the host bridge without invoking any LLM, applies the
+        configured allow/block/regex rules, discards junk (logged for audit),
+        and queues the rest for Tier 1 classification. Only messages newer than
+        the last ingest are considered.
 
         Args:
             limit: Max number of new messages to pull this pass (default 50).
         """
         config = await _get_config(agent_id)
 
-        if sys.platform != "darwin":
-            return "Apple Mail ingestion is only available on macOS; nothing ingested."
-        if _envelope_index_path() is None:
-            return "Mail Envelope Index not found under ~/Library/Mail; nothing ingested."
-
         conn = _connect(config)
         try:
             after = int(_meta_get(conn, "last_rowid", "0") or 0)
-            messages = _read_envelope_messages(after, limit)
-            if not messages:
-                return f"No new mail since last ingest (high-water ROWID {after})."
+        finally:
+            conn.close()
 
+        try:
+            messages = await _bridge_get_new_mail(agent_id, after, limit)
+        except ValueError as e:
+            return f"Could not reach the host bridge to read mail: {e}"
+        if not messages:
+            return f"No new mail since last ingest (high-water ROWID {after})."
+
+        conn = _connect(config)
+        try:
             discarded = 0
             max_rowid = after
             for msg in messages:
@@ -1161,37 +1116,42 @@ def create_tools(agent_id: str):
 
         conn = _connect(config)
         try:
-            rows = conn.execute(
-                "SELECT id, message_ref, sender, subject, body_snippet "
-                "FROM queue WHERE state = 'pending' ORDER BY id ASC LIMIT ?",
-                (max(1, limit),),
-            ).fetchall()
-            items = []
-            for r in rows:
-                body = _fetch_body_applescript(r["message_ref"]) or (
-                    r["body_snippet"] or r["subject"] or ""
-                )
-                items.append(
-                    {
-                        "id": r["id"],
-                        "message_ref": r["message_ref"],
-                        "sender": r["sender"] or "",
-                        "subject": r["subject"] or "",
-                        "body": body,
-                    }
-                )
-            priors = _load_sender_priors(conn, [it["sender"] for it in items])
+            rows = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT id, message_ref, sender, subject, body_snippet "
+                    "FROM queue WHERE state = 'pending' ORDER BY id ASC LIMIT ?",
+                    (max(1, limit),),
+                ).fetchall()
+            ]
+            priors = _load_sender_priors(conn, [r["sender"] for r in rows])
             fb_candidates = _fetch_feedback_candidates(conn)
         finally:
-            conn.close()  # don't hold the store open across the model call
+            conn.close()  # don't hold the store open across bridge/model calls
 
         # Nothing new to classify — still flush any previously-classified items
         # whose routing may have failed on an earlier pass.
-        if not items:
-            routed = _route_classified(config)
+        if not rows:
+            routed = await _route_classified(config, agent_id)
             return (
                 "No new items to classify. "
                 f"Routing pass: {_format_routing(routed)}."
+            )
+
+        # Lazily fetch bodies from the host bridge (falls back to snippet/subject).
+        items = []
+        for r in rows:
+            body = await _bridge_get_body(agent_id, r["message_ref"]) or (
+                r["body_snippet"] or r["subject"] or ""
+            )
+            items.append(
+                {
+                    "id": r["id"],
+                    "message_ref": r["message_ref"],
+                    "sender": r["sender"] or "",
+                    "subject": r["subject"] or "",
+                    "body": body,
+                }
             )
 
         # Semantic few-shot: corrections most similar to this batch (FR-15/FR-26).
@@ -1298,7 +1258,7 @@ def create_tools(agent_id: str):
                 tier3_note = f" Escalation {why}; {review} flagged for manual review."
 
         # ── Output routing: Reminders / daily Note / audit ──────────────────
-        routed = _route_classified(config)
+        routed = await _route_classified(config, agent_id)
 
         breakdown = ", ".join(f"{k}: {v}" for k, v in counts.items())
         return (
@@ -1372,7 +1332,7 @@ def create_tools(agent_id: str):
         sender priors updated, and few-shot coverage.
         """
         config = await _get_config(agent_id)
-        implicit = _scan_reminder_feedback(config)  # FR-23, best-effort
+        implicit = await _scan_reminder_feedback(config, agent_id)  # FR-23, best-effort
 
         conn = _connect(config)
         try:
@@ -1475,8 +1435,8 @@ def create_tools(agent_id: str):
 
 # ─── Connection test ─────────────────────────────────────────────────────────
 async def test_connection(creds: dict, config: dict) -> dict:
-    """Validate the scaffold: referenced LLM Purposes resolve, the SQLite store
-    is writable, and (on macOS) the Mail Envelope Index is reachable.
+    """Validate config: referenced LLM Purposes resolve, the SQLite store is
+    writable, and the host bridge daemon is reachable and authenticated.
     """
     details: list[str] = []
     ok = True
@@ -1525,14 +1485,34 @@ async def test_connection(creds: dict, config: dict) -> dict:
         ok = False
         details.append(f"✗ Data store error: {e}")
 
-    # 3. Apple Mail (informational — not required for the extension to load)
-    if sys.platform != "darwin":
-        details.append("! Not running on macOS — Apple Mail ingestion unavailable here.")
+    # 3. Host bridge daemon
+    import httpx
+
+    bridge_url = (config.get("bridge_url") or "").rstrip("/")
+    token = creds.get("bridge_token") or ""
+    if not bridge_url:
+        ok = False
+        details.append("✗ Host Bridge URL is not set (e.g. http://host.docker.internal:7476).")
     else:
-        env_path = _envelope_index_path()
-        if env_path:
-            details.append(f"✓ Mail Envelope Index found: {env_path}.")
-        else:
-            details.append("! Mail Envelope Index not found under ~/Library/Mail.")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{bridge_url}/health",
+                    headers={"Authorization": f"Bearer {token}"} if token else {},
+                )
+            if resp.status_code == 401:
+                ok = False
+                details.append("✗ Host bridge rejected the token (401).")
+            elif not resp.is_success:
+                ok = False
+                details.append(f"✗ Host bridge returned {resp.status_code}.")
+            else:
+                details.append(f"✓ Host bridge reachable at {bridge_url}.")
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            ok = False
+            details.append(
+                f"✗ Host bridge unreachable at {bridge_url} ({e}). "
+                "Is scripts/smart_organizer_bridge.py running on the host?"
+            )
 
     return {"ok": ok, "detail": "\n".join(details)}
