@@ -49,7 +49,7 @@ import logging
 import os
 import re
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1057,6 +1057,10 @@ def create_tools(agent_id: str):
         the rest for Tier 1 classification. Only messages received after the
         last ingest are considered (by received date; duplicates are de-duped).
 
+        On first activation the existing inbox is left untouched: the high-water
+        mark is seeded to "now", so only go-forward mail (arriving after the
+        organizer is enabled) is ever triaged.
+
         Args:
             limit: Max number of new messages to pull this pass (default 50).
         """
@@ -1065,8 +1069,26 @@ def create_tools(agent_id: str):
         conn = _connect(config)
         try:
             since = _meta_get(conn, "last_received_at", "") or ""
+            initialized = _meta_get(conn, "ingest_initialized", "") == "1"
         finally:
             conn.close()
+
+        if not initialized:
+            # First run: seed the high-water to now (go-forward only) and stop,
+            # so the pre-existing inbox is never bulk-triaged.
+            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            conn = _connect(config)
+            try:
+                _meta_set(conn, "last_received_at", now_iso)
+                _meta_set(conn, "ingest_initialized", "1")
+                conn.commit()
+            finally:
+                conn.close()
+            return (
+                f"First activation — high-water mark set to {now_iso}. Only mail "
+                "arriving after now will be triaged; the existing inbox is left "
+                "untouched."
+            )
 
         try:
             messages = await _bridge_get_new_mail(agent_id, since, limit)
