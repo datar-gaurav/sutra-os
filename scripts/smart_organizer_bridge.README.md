@@ -3,7 +3,8 @@
 The `smart_organizer` extension runs inside the Docker backend, which cannot
 reach macOS apps. This daemon runs on the **host** and does the macOS I/O
 (read Apple Mail, write Reminders/Notes) on the extension's behalf, over
-`http://host.docker.internal:7477`.
+`http://host.docker.internal:7477`. It reads mail through Mail's scripting
+interface (Automation), so it never needs Full Disk Access to `~/Library/Mail`.
 
 ## Setup
 
@@ -16,31 +17,26 @@ Then, in **Settings ▸ Integrations ▸ Smart Organizer**, set:
 - **Host Bridge URL**: `http://host.docker.internal:7477`
 - **Host Bridge Token**: the `SMART_ORGANIZER_BRIDGE_TOKEN` value from `backend/.env`
 
-### macOS permissions (two separate grants)
+### macOS permissions (Automation only)
 
-The bridge needs **two** different privacy permissions:
-
-1. **Full Disk Access** — to read Mail's Envelope Index file (`~/Library/Mail`),
-   which is a protected location. Add the process that runs the bridge under
-   **System Settings ▸ Privacy & Security ▸ Full Disk Access**. For the launchd
-   agent that's the Python interpreter (e.g. `/opt/homebrew/bin/python3` or
-   `/usr/bin/python3`); drag it in with **+**, then restart the agent. Without
-   this, `/health` reports `mail_status: needs_fda` and mail endpoints return 503
-   — even though Apple Mail is set up.
-2. **Automation** — to script Mail / Reminders / Notes via `osascript`. macOS
-   prompts on first use; approve under **System Settings ▸ Privacy & Security ▸
-   Automation**.
+The bridge scripts **Mail**, **Reminders**, and **Notes** via `osascript`, so it
+needs only **Automation** — *not* Full Disk Access. macOS prompts on first use
+(one prompt per app); approve them, or pre-grant under **System Settings ▸
+Privacy & Security ▸ Automation** by allowing the bridge/`osascript` to control
+each app. Until Mail is approved, `/health` reports `mail_status:
+needs_automation` and mail endpoints return 503 — even though Apple Mail is set
+up. Reads are windowed (a bounded slice of the newest messages, filtered by
+received date), so mailbox size doesn't affect cost.
 
 Check readiness any time:
 
 ```bash
 curl -s -H "Authorization: Bearer $SMART_ORGANIZER_BRIDGE_TOKEN" \
      http://127.0.0.1:7477/health
-# {"ok": true, "mail_status": "ok", "envelope_index": ".../Envelope Index", ...}
+# {"ok": true, "mail_status": "ok", "version": "1.0.0"}
 ```
 
-`mail_status` is one of `ok` / `no_mail` / `needs_fda` / `no_index`, each with a
-`hint`.
+`mail_status` is one of `ok` / `needs_automation` / `error`, each with a `hint`.
 
 ### Manual control
 
@@ -56,8 +52,8 @@ python3 scripts/smart_organizer_bridge.py
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | `/health` | — | `{ok, envelope_index, version}` |
-| GET | `/mail/new` | `?after=<rowid>&limit=<n>` | `{messages: [...]}` |
+| GET | `/health` | — | `{ok, mail_status, hint, version}` |
+| GET | `/mail/new` | `?since=<iso8601>&limit=<n>` | `{messages: [...]}` |
 | GET | `/mail/body` | `?message_id=<id>` | `{body}` |
 | POST | `/reminders` | `{title, due}` | `{ok, id}` |
 | GET | `/reminders/status` | `?id=<id>` | `{status}` (completed/open/missing) |

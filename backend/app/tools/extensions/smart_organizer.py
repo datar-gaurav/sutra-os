@@ -476,16 +476,20 @@ def _is_urgent(sender: str, subject: str, body: str, config: dict) -> tuple[bool
 
 
 # ─── Tier 0: new mail via host bridge ────────────────────────────────────────
-async def _bridge_get_new_mail(agent_id: str, after_rowid: int, limit: int) -> list[dict]:
-    """Fetch new messages (ROWID > after_rowid) from the host bridge.
+async def _bridge_get_new_mail(agent_id: str, since: str, limit: int) -> list[dict]:
+    """Fetch recent inbox messages from the host bridge.
 
-    The bridge reads Mail's Envelope Index on the host and returns dicts with
-    rowid, message_id, sender, subject, received_at (ISO 8601), and read.
+    The bridge scripts Apple Mail on the host (Automation permission — no Full
+    Disk Access) and returns dicts with message_id, sender, subject,
+    received_at (ISO 8601), and read. When `since` (ISO 8601) is set, the bridge
+    filters to messages received after it, so cost scales with new mail rather
+    than mailbox size; the queue's message_ref UNIQUE constraint drops any
+    boundary rows re-fetched across the high-water mark.
     """
-    data = await _call_bridge(
-        "GET", "/mail/new", agent_id,
-        params={"after": after_rowid, "limit": max(1, limit)},
-    )
+    params: dict = {"limit": max(1, limit)}
+    if since:
+        params["since"] = since
+    data = await _call_bridge("GET", "/mail/new", agent_id, params=params)
     if isinstance(data, dict):
         return data.get("messages", [])
     return data or []
@@ -493,7 +497,7 @@ async def _bridge_get_new_mail(agent_id: str, after_rowid: int, limit: int) -> l
 
 async def _bridge_get_body(agent_id: str, message_id: str) -> str:
     """Fetch a stripped message body from the host bridge; "" on any failure."""
-    if not message_id or message_id.startswith("rowid:"):
+    if not message_id:
         return ""
     try:
         data = await _call_bridge(
@@ -1047,11 +1051,11 @@ def create_tools(agent_id: str):
         """Tier 0 — read newly-arrived Apple Mail, apply the discard rules, and
         enqueue survivors for the next batch cycle.
 
-        Reads message metadata (sender, subject, date) from Mail's Envelope
-        Index via the host bridge without invoking any LLM, applies the
-        configured allow/block/regex rules, discards junk (logged for audit),
-        and queues the rest for Tier 1 classification. Only messages newer than
-        the last ingest are considered.
+        Reads message metadata (sender, subject, date) from Apple Mail via the
+        host bridge without invoking any LLM, applies the configured
+        allow/block/regex rules, discards junk (logged for audit), and queues
+        the rest for Tier 1 classification. Only messages received after the
+        last ingest are considered (by received date; duplicates are de-duped).
 
         Args:
             limit: Max number of new messages to pull this pass (default 50).
@@ -1060,23 +1064,25 @@ def create_tools(agent_id: str):
 
         conn = _connect(config)
         try:
-            after = int(_meta_get(conn, "last_rowid", "0") or 0)
+            since = _meta_get(conn, "last_received_at", "") or ""
         finally:
             conn.close()
 
         try:
-            messages = await _bridge_get_new_mail(agent_id, after, limit)
+            messages = await _bridge_get_new_mail(agent_id, since, limit)
         except ValueError as e:
             return f"Could not reach the host bridge to read mail: {e}"
         if not messages:
-            return f"No new mail since last ingest (high-water ROWID {after})."
+            return "No new mail since last ingest."
 
         conn = _connect(config)
         try:
             discarded = 0
-            max_rowid = after
+            high_water = since
             for msg in messages:
-                max_rowid = max(max_rowid, int(msg["rowid"]))
+                recv = msg.get("received_at")
+                if recv and (not high_water or recv > high_water):
+                    high_water = recv
                 decision, reason = evaluate_rules(msg["sender"], msg["subject"], config)
                 conn.execute(
                     "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
@@ -1101,7 +1107,8 @@ def create_tools(agent_id: str):
                         msg["subject"],
                     ),
                 )
-            _meta_set(conn, "last_rowid", str(max_rowid))
+            if high_water:
+                _meta_set(conn, "last_received_at", high_water)
             conn.commit()
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM queue WHERE state = 'pending'"
@@ -1112,8 +1119,7 @@ def create_tools(agent_id: str):
         kept = len(messages) - discarded
         return (
             f"Ingested {len(messages)} new message(s): kept {kept}, discarded {discarded} "
-            f"by Tier 0 rules. Queue now holds {pending} pending item(s) "
-            f"(high-water ROWID {max_rowid})."
+            f"by Tier 0 rules. Queue now holds {pending} pending item(s)."
         )
 
     @tool

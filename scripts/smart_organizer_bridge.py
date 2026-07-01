@@ -4,10 +4,10 @@
 Runs on the HOST machine (macOS, not inside Docker). Listens on 127.0.0.1:PORT.
 The backend container reaches it via http://host.docker.internal:PORT.
 
-It performs the macOS-only I/O the container cannot: reading Mail's Envelope
-Index, fetching message bodies, and creating Reminders / appending to a daily
-Note. All intelligence + state live in the container; this daemon is a thin
-macOS proxy.
+It performs the macOS-only I/O the container cannot: reading Apple Mail's inbox
+(via Mail's scripting interface — Automation permission, not Full Disk Access),
+fetching message bodies, and creating Reminders / appending to a daily Note. All
+intelligence + state live in the container; this daemon is a thin macOS proxy.
 
 Usage:
     python3 scripts/smart_organizer_bridge.py
@@ -17,11 +17,10 @@ Config is read from ../backend/.env (relative to this script's directory):
     SMART_ORGANIZER_BRIDGE_PORT     — port to listen on (default 7477)
     SMART_ORGANIZER_ARRIVAL_WEBHOOK — optional URL the Mail rule's /arrival
                                       notifications are forwarded to
-    SMART_ORGANIZER_MAIL_ROOT       — optional override for ~/Library/Mail
 
 Endpoints (all require Authorization: Bearer <token> when a token is set):
     GET  /health
-    GET  /mail/new?after=<rowid>&limit=<n>
+    GET  /mail/new?since=<iso8601>&limit=<n>
     GET  /mail/body?message_id=<id>
     POST /reminders            {title, due}          -> {ok, id}
     GET  /reminders/status?id=<id>                   -> {status}
@@ -37,7 +36,6 @@ import datetime
 import http.server
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import urllib.parse
@@ -85,132 +83,108 @@ BRIDGE_PORT: int = int(
 ARRIVAL_WEBHOOK: str = _env.get("SMART_ORGANIZER_ARRIVAL_WEBHOOK") or os.environ.get(
     "SMART_ORGANIZER_ARRIVAL_WEBHOOK", ""
 )
-_MAIL_ROOT_OVERRIDE: str = _env.get("SMART_ORGANIZER_MAIL_ROOT") or os.environ.get(
-    "SMART_ORGANIZER_MAIL_ROOT", ""
-)
 
 _BODY_SNIPPET_CHARS = 1500
-# Apple stores Envelope Index dates as CFAbsoluteTime (seconds since 2001-01-01).
-_APPLE_EPOCH_OFFSET = 978307200
 
 
-# ── Mail Envelope Index (read-only) ───────────────────────────────────────────
-def _mail_root() -> Path:
-    return (
-        Path(_MAIL_ROOT_OVERRIDE).expanduser()
-        if _MAIL_ROOT_OVERRIDE
-        else Path(os.path.expanduser("~/Library/Mail"))
-    )
+# ── Mail scripting (Automation, not Full Disk Access) ─────────────────────────
+# Inbox metadata is read through Mail's scripting interface, so the bridge needs
+# only Automation permission (System Settings > Privacy & Security > Automation)
+# — never Full Disk Access. Reads are windowed to at most `limit` messages and,
+# when `since` is given, filtered server-side (in Mail) by received date, so a
+# large archive is never enumerated and cost scales with new mail.
+#
+# JXA: return up to `limit` inbox messages; when `since` (ISO-8601) is set, only
+# those received after it. `whose` pushes the date filter into Mail. A 1-second
+# slop on the boundary means a message sharing the high-water timestamp is never
+# skipped; the extension's message_ref UNIQUE constraint drops the re-fetched
+# boundary rows. The loop is bounded by `limit` and never calls `.length` on the
+# unfiltered collection.
+_MAIL_NEW_JXA = r"""
+function run(argv) {
+  var limit = parseInt(argv[0], 10); if (!(limit > 0)) limit = 50;
+  var since = argv[1] || "";
+  var Mail = Application("Mail");
+  var msgs;
+  try {
+    var inbox = Mail.inbox();
+    var sinceMs = since ? Date.parse(since) : NaN;
+    if (!isNaN(sinceMs)) {
+      var sinceDate = new Date(sinceMs - 1000);
+      msgs = inbox.messages.whose({dateReceived: {_greaterThan: sinceDate}});
+    } else {
+      msgs = inbox.messages;
+    }
+  } catch (e) {
+    return JSON.stringify({error: String(e)});
+  }
+  var out = [];
+  for (var i = 0; i < limit; i++) {
+    var m, mid;
+    try { m = msgs[i]; mid = m.messageId(); } catch (e) { break; }
+    var snd = ""; try { snd = m.sender() || ""; } catch (e) {}
+    var addr = snd; var mt = String(snd).match(/<([^>]+)>/); if (mt) addr = mt[1];
+    var subj = ""; try { subj = m.subject() || ""; } catch (e) {}
+    var recv = null; try { var d = m.dateReceived(); if (d) recv = d.toISOString(); } catch (e) {}
+    var rd = null; try { rd = m.readStatus(); } catch (e) {}
+    out.push({message_id: String(mid), sender: String(addr), subject: String(subj),
+              received_at: recv, read: rd});
+  }
+  return JSON.stringify({messages: out});
+}
+"""
+
+# JXA probe: is Mail scriptable (Automation granted, app reachable)? Returns "ok"
+# or throws; the error text distinguishes not-authorized from other failures.
+_MAIL_PROBE_JXA = r"""
+function run() {
+  var Mail = Application("Mail");
+  Mail.inbox.name();
+  return "ok";
+}
+"""
 
 
-def _mail_status() -> tuple[str, Path | None]:
-    """Diagnose Mail readability. Returns (status, envelope_index_path).
-
-    status is one of:
-      ok         — Envelope Index found and the directory is readable
-      no_mail    — ~/Library/Mail does not exist (Apple Mail not set up)
-      needs_fda  — the directory exists but can't be read (Full Disk Access)
-      no_index   — directory readable but no Envelope Index inside
-    """
-    root = _mail_root()
-    if not root.exists():
-        return "no_mail", None
-    try:
-        # Enumerating the protected dir raises PermissionError without Full Disk Access.
-        next(root.iterdir(), None)
-    except PermissionError:
-        return "needs_fda", None
-    except OSError:
-        return "needs_fda", None
-    matches = sorted(root.glob("V*/MailData/Envelope Index"))
-    if matches:
-        return "ok", matches[-1]
-    return "no_index", None
+def _mail_status() -> str:
+    """Probe whether Mail is scriptable. One of: ok, needs_automation, error."""
+    ok, out = _osascript("JavaScript", _MAIL_PROBE_JXA, [], timeout=15.0)
+    if ok:
+        return "ok"
+    low = out.lower()
+    if "-1743" in out or "not authorized" in low or "not allowed" in low:
+        return "needs_automation"
+    return "error"
 
 
 _MAIL_STATUS_HINT = {
     "ok": None,
-    "no_mail": "Apple Mail is not set up (~/Library/Mail does not exist).",
-    "needs_fda": (
-        "~/Library/Mail can't be read — grant Full Disk Access to the process running "
-        "this bridge (System Settings > Privacy & Security > Full Disk Access), then "
-        "restart it."
+    "needs_automation": (
+        "Mail isn't scriptable yet — grant Automation access so the bridge can read "
+        "Apple Mail (System Settings > Privacy & Security > Automation, allow the "
+        "bridge/osascript to control Mail). macOS also prompts on first use; click OK."
     ),
-    "no_index": "~/Library/Mail is readable but no 'Envelope Index' was found inside.",
+    "error": "Couldn't script Mail — is Apple Mail installed and configured?",
 }
 
 
-def _envelope_index_path() -> Path | None:
-    """Locate the most recent Mail.app Envelope Index (None if unreadable/absent)."""
-    status, path = _mail_status()
-    return path if status == "ok" else None
+def _read_inbox(limit: int, since: str) -> tuple[list[dict] | None, str | None]:
+    """Read a windowed slice of inbox metadata via Mail scripting.
 
-
-def _apple_time_to_iso(value) -> str | None:
-    """Convert an Envelope Index timestamp to ISO-8601 UTC, tolerantly."""
+    Returns (messages, None) on success or (None, error) on failure. Each message
+    is a dict with message_id, sender, subject, received_at (ISO 8601), and read.
+    """
+    ok, out = _osascript(
+        "JavaScript", _MAIL_NEW_JXA, [str(max(1, limit)), since or ""], timeout=60.0
+    )
+    if not ok:
+        return None, out
     try:
-        ts = float(value)
-    except (TypeError, ValueError):
-        return None
-    if ts <= 0:
-        return None
-    if ts < _APPLE_EPOCH_OFFSET:
-        ts += _APPLE_EPOCH_OFFSET
-    try:
-        return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).isoformat()
-    except (OverflowError, OSError, ValueError):
-        return None
-
-
-def _read_envelope_messages(after_rowid: int, limit: int) -> list[dict]:
-    """Return new messages (ROWID > after_rowid) from the Mail Envelope Index."""
-    env_path = _envelope_index_path()
-    if env_path is None:
-        return []
-    try:
-        conn = sqlite3.connect(f"file:{env_path}?mode=ro", uri=True)
-    except sqlite3.OperationalError:
-        conn = sqlite3.connect(f"file:{env_path}?mode=ro&immutable=1", uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
-        if not {"sender", "subject", "date_received"} <= cols:
-            print(f"[bridge] unexpected Envelope Index schema: {sorted(cols)}", flush=True)
-            return []
-        msg_id_expr = "m.message_id" if "message_id" in cols else "NULL"
-        read_expr = "m.read" if "read" in cols else "NULL"
-        query = f"""
-            SELECT m.ROWID         AS rowid,
-                   {msg_id_expr}   AS message_id,
-                   a.address       AS sender,
-                   s.subject       AS subject,
-                   m.date_received AS date_received,
-                   {read_expr}     AS read_flag
-            FROM messages m
-            LEFT JOIN addresses a ON a.ROWID = m.sender
-            LEFT JOIN subjects  s ON s.ROWID = m.subject
-            WHERE m.ROWID > ?
-            ORDER BY m.ROWID ASC
-            LIMIT ?
-        """
-        rows = conn.execute(query, (after_rowid, max(1, limit))).fetchall()
-    except sqlite3.Error as e:
-        print(f"[bridge] Envelope Index read failed: {e}", flush=True)
-        return []
-    finally:
-        conn.close()
-
-    return [
-        {
-            "rowid": r["rowid"],
-            "message_id": r["message_id"] or f"rowid:{r['rowid']}",
-            "sender": r["sender"] or "",
-            "subject": r["subject"] or "",
-            "received_at": _apple_time_to_iso(r["date_received"]),
-            "read": bool(r["read_flag"]) if r["read_flag"] is not None else None,
-        }
-        for r in rows
-    ]
+        data = json.loads(out) if out else {}
+    except json.JSONDecodeError:
+        return None, f"unparseable Mail output: {out[:200]}"
+    if isinstance(data, dict) and data.get("error"):
+        return None, str(data["error"])
+    return list(data.get("messages", [])), None
 
 
 # ── osascript helpers (macOS app scripting) ───────────────────────────────────
@@ -271,7 +245,7 @@ def _osascript(lang: str, script: str, args: list[str], timeout: float = 10.0) -
 
 
 def _fetch_body(message_id: str) -> str:
-    if not message_id or message_id.startswith("rowid:"):
+    if not message_id:
         return ""
     mid = message_id.strip().lstrip("<").rstrip(">")
     script = (
@@ -366,11 +340,10 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     # ── Handlers ──────────────────────────────────────────────────────────────
     def _handle_health(self) -> None:
-        status, env_path = _mail_status()
+        status = _mail_status()
         self._send_json({
             "ok": status == "ok",
             "mail_status": status,
-            "envelope_index": str(env_path) if env_path else None,
             "hint": _MAIL_STATUS_HINT.get(status),
             "version": VERSION,
         })
@@ -378,19 +351,29 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
     def _handle_mail_new(self) -> None:
         q = self._query()
         try:
-            after = int(q.get("after", "0"))
             limit = int(q.get("limit", "50"))
         except ValueError:
-            self._send_json({"detail": "after/limit must be integers"}, 400)
+            self._send_json({"detail": "limit must be an integer"}, 400)
             return
-        status, _ = _mail_status()
-        if status != "ok":
+        since = q.get("since", "")
+        messages, err = _read_inbox(limit, since)
+        if err is not None:
+            low = err.lower()
+            status = (
+                "needs_automation"
+                if ("-1743" in err or "not authorized" in low or "not allowed" in low)
+                else "error"
+            )
             self._send_json(
-                {"detail": _MAIL_STATUS_HINT.get(status, "Mail unavailable"), "mail_status": status},
+                {
+                    "detail": _MAIL_STATUS_HINT.get(status) or err,
+                    "mail_status": status,
+                    "error": err,
+                },
                 503,
             )
             return
-        self._send_json({"messages": _read_envelope_messages(after, limit)})
+        self._send_json({"messages": messages})
 
     def _handle_mail_body(self) -> None:
         message_id = self._query().get("message_id", "")
@@ -457,9 +440,9 @@ def main() -> None:
             '         Generate one with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"',
             file=sys.stderr,
         )
-    status, env_path = _mail_status()
+    status = _mail_status()
     if status == "ok":
-        print(f"[bridge] Envelope Index: {env_path}", flush=True)
+        print("[bridge] Mail is scriptable (Automation granted).", flush=True)
     else:
         print(f"[bridge] WARNING: mail_status={status} — {_MAIL_STATUS_HINT.get(status)}", file=sys.stderr)
 
