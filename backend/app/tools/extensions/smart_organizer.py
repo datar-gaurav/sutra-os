@@ -36,10 +36,12 @@ Provides:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -186,6 +188,18 @@ CREATE TABLE IF NOT EXISTS decision_log (
     confidence    REAL,
     timestamp     TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS classifications (
+    message_ref   TEXT PRIMARY KEY,
+    label         TEXT,
+    type          TEXT,
+    summary       TEXT,
+    due_date      TEXT,
+    priority      TEXT,
+    confidence    REAL,
+    source        TEXT,
+    escalated     INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS meta (
     key           TEXT PRIMARY KEY,
     value         TEXT
@@ -227,6 +241,14 @@ async def _get_config(agent_id: str) -> dict:
 def _resolve_sqlite_path(config: dict) -> Path:
     raw = (config.get("sqlite_path") or "").strip() or DEFAULT_SQLITE_PATH
     return Path(os.path.expanduser(raw))
+
+
+def _get_float(value, default: float) -> float:
+    """Coerce a config/model value to float, falling back to default."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _connect(config: dict) -> sqlite3.Connection:
@@ -411,6 +433,159 @@ def _meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+# ─── Tier 1: classification & extraction ─────────────────────────────────────
+LABELS = ("Actionable", "Important-FYI", "Junk")
+_BODY_SNIPPET_CHARS = 1500
+
+
+def _fetch_body_applescript(message_id: str, timeout: float = 6.0) -> str:
+    """Fetch a message body via Mail.app scripting (macOS). Best-effort → "".
+
+    Matches on the RFC message id stored in the Envelope Index. Returns a
+    stripped, truncated snippet; empty string on any failure so callers can
+    fall back to the subject.
+    """
+    if sys.platform != "darwin" or message_id.startswith("rowid:"):
+        return ""
+    mid = message_id.strip().lstrip("<").rstrip(">")
+    script = (
+        'tell application "Mail"\n'
+        f'  set matches to (every message of inbox whose message id is "{mid}")\n'
+        "  if matches is {} then return \"\"\n"
+        "  return content of item 1 of matches\n"
+        "end tell"
+    )
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("smart_organizer: body fetch failed for %s: %s", message_id, e)
+        return ""
+    body = (proc.stdout or "").strip()
+    return body[:_BODY_SNIPPET_CHARS]
+
+
+def _load_sender_priors(conn: sqlite3.Connection, senders: list[str]) -> dict[str, float]:
+    """Return {sender: importance_score} for the given senders that have priors."""
+    priors: dict[str, float] = {}
+    for sender in set(s for s in senders if s):
+        row = conn.execute(
+            "SELECT score FROM sender_priors WHERE sender = ?", (sender,)
+        ).fetchone()
+        if row is not None:
+            priors[sender] = row["score"]
+    return priors
+
+
+def _load_fewshot(conn: sqlite3.Connection, limit: int = 3) -> list[dict]:
+    """Return the most recent human corrections as few-shot examples."""
+    rows = conn.execute(
+        "SELECT sender, subject, body_snippet, user_label "
+        "FROM feedback ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+_SYSTEM_PROMPT = (
+    "You are an on-device email triage classifier. For EACH input message, "
+    "classify it and extract structured fields. Respond with ONLY a JSON array "
+    "(no prose, no markdown fences). Each element must be an object with keys:\n"
+    '  id (int, echo the input id exactly)\n'
+    "  label (one of \"Actionable\", \"Important-FYI\", \"Junk\")\n"
+    '  type ("task" or "fyi")\n'
+    "  summary (string, one line)\n"
+    "  due_date (ISO-8601 date/time or null)\n"
+    '  priority ("high", "medium", or "low")\n'
+    "  confidence (number 0..1 — your certainty in the label)\n"
+    "  source_sender (string)\n"
+    "  source_subject (string)\n"
+    "Actionable = the user must do something; Important-FYI = worth knowing but "
+    "no action; Junk = promotional/automated/no value. Be conservative with "
+    "confidence when signals conflict."
+)
+
+
+def _build_user_prompt(items: list[dict], priors: dict[str, float], fewshot: list[dict]) -> str:
+    """Assemble the batch user prompt with sender priors + few-shot corrections."""
+    parts: list[str] = []
+    if priors:
+        prior_lines = "\n".join(
+            f"  {s}: importance {score:+.2f}" for s, score in priors.items()
+        )
+        parts.append(
+            "Per-sender importance priors (learned from this user; higher = more "
+            "important). Weight these:\n" + prior_lines
+        )
+    if fewshot:
+        ex_lines = "\n".join(
+            f'  from {e["sender"]!r} subj {e["subject"]!r} → correct label: {e["user_label"]}'
+            for e in fewshot
+        )
+        parts.append("Recent user corrections (learn from these):\n" + ex_lines)
+
+    batch = [
+        {
+            "id": it["id"],
+            "sender": it["sender"],
+            "subject": it["subject"],
+            "body": it["body"],
+        }
+        for it in items
+    ]
+    parts.append(
+        "Classify every message in this batch and return the JSON array:\n"
+        + json.dumps(batch, ensure_ascii=False, indent=2)
+    )
+    return "\n\n".join(parts)
+
+
+def _strip_json_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+    return text
+
+
+def _parse_classifications(text: str) -> list[dict]:
+    """Parse the model's JSON array; tolerate fences and a single trailing object.
+
+    Returns [] if nothing parseable is found (caller degrades gracefully).
+    """
+    cleaned = _strip_json_fences(text)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Try to salvage the first JSON array in the text.
+        match = re.search(r"\[.*\]", cleaned, flags=re.DOTALL)
+        if not match:
+            return []
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return []
+    if isinstance(data, dict):
+        data = [data]
+    return [d for d in data if isinstance(d, dict)]
+
+
+def _normalize_label(raw) -> str:
+    """Map a model label onto the canonical set; default to Important-FYI."""
+    val = str(raw or "").strip().lower()
+    for label in LABELS:
+        if label.lower() == val:
+            return label
+    if "action" in val:
+        return "Actionable"
+    if "junk" in val or "spam" in val:
+        return "Junk"
+    return "Important-FYI"
+
+
 # ─── Tools ───────────────────────────────────────────────────────────────────
 def create_tools(agent_id: str):
     _STUB = (
@@ -500,12 +675,149 @@ def create_tools(agent_id: str):
         return _STUB
 
     @tool
-    async def smart_organizer_run_batch() -> str:
-        """Tier 1 (+ Tier 3) — classify and extract the entire queued batch in a
-        single local-model pass, escalate low-confidence items to the frontier
-        model when enabled, and route results to Reminders / the daily Note.
+    async def smart_organizer_run_batch(limit: int = 50) -> str:
+        """Tier 1 — classify and extract the entire queued batch in a single
+        local-model pass routed through the configured Batch LLM Purpose.
+
+        Fetches message bodies lazily (Apple Mail, macOS), injects per-sender
+        importance priors and recent user corrections, and asks the model for a
+        strict JSON array. Results are stored and each item is marked
+        'classified'; items below the confidence threshold are flagged for
+        Tier 3 escalation (performed by a later stage). On any model/routing
+        failure, items stay queued for the next cycle.
+
+        Args:
+            limit: Max queued items to classify this pass (default 50).
         """
-        return _STUB
+        config = await _get_config(agent_id)
+        batch_purpose_id = (config.get("batch_purpose_id") or "").strip()
+        if not batch_purpose_id:
+            return "No Batch LLM Purpose configured (batch_purpose_id); cannot classify."
+        threshold = _get_float(config.get("confidence_threshold"), DEFAULT_CONFIDENCE_THRESHOLD)
+
+        conn = _connect(config)
+        try:
+            rows = conn.execute(
+                "SELECT id, message_ref, sender, subject, body_snippet "
+                "FROM queue WHERE state = 'pending' ORDER BY id ASC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+            if not rows:
+                return "Queue is empty — nothing to classify."
+            items = []
+            for r in rows:
+                body = _fetch_body_applescript(r["message_ref"]) or (
+                    r["body_snippet"] or r["subject"] or ""
+                )
+                items.append(
+                    {
+                        "id": r["id"],
+                        "message_ref": r["message_ref"],
+                        "sender": r["sender"] or "",
+                        "subject": r["subject"] or "",
+                        "body": body,
+                    }
+                )
+            priors = _load_sender_priors(conn, [it["sender"] for it in items])
+            fewshot = _load_fewshot(conn)
+            user_prompt = _build_user_prompt(items, priors, fewshot)
+        finally:
+            conn.close()  # don't hold the store open across the model call
+
+        # Route through the purpose (honors rate limits, fallback slots, keys).
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        from app.core.callbacks import UsageCallbackHandler
+        from app.core.llm_registry import llm_registry
+        from app.core.smart_router import resolve_model
+        from app.db.session import async_session_factory
+
+        est_tokens = (len(_SYSTEM_PROMPT) + len(user_prompt)) // 4 + 256 * len(items)
+        try:
+            async with async_session_factory() as db:
+                provider, model = await resolve_model(batch_purpose_id, est_tokens, db)
+        except Exception as e:  # noqa: BLE001
+            return f"Could not resolve a model for the batch purpose: {e}. Items remain queued."
+
+        llm = llm_registry.get_chat_model(
+            provider, model, temperature=0.0, max_tokens=4096, streaming=False
+        )
+        try:
+            response = await llm.ainvoke(
+                [SystemMessage(content=_SYSTEM_PROMPT), HumanMessage(content=user_prompt)],
+                config={"callbacks": [UsageCallbackHandler()]},
+            )
+        except Exception as e:  # noqa: BLE001
+            return (
+                f"Batch classification model call failed ({provider}/{model}): {e}. "
+                "Items remain queued."
+            )
+
+        content = response.content
+        if isinstance(content, list):
+            content = "\n".join(
+                b.get("text", "")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        results = _parse_classifications(str(content))
+        if not results:
+            return (
+                f"Model ({provider}/{model}) returned no parseable classifications; "
+                "items remain queued."
+            )
+
+        by_id = {it["id"]: it for it in items}
+        counts = {label: 0 for label in LABELS}
+        below = classified = 0
+        conn = _connect(config)
+        try:
+            for res in results:
+                item = by_id.get(res.get("id"))
+                if item is None:
+                    continue
+                label = _normalize_label(res.get("label"))
+                confidence = _get_float(res.get("confidence"), 0.0)
+                conn.execute(
+                    "INSERT INTO classifications "
+                    "(message_ref, label, type, summary, due_date, priority, "
+                    " confidence, source, escalated) "
+                    "VALUES (?,?,?,?,?,?,?,?,0) "
+                    "ON CONFLICT(message_ref) DO UPDATE SET "
+                    "label=excluded.label, type=excluded.type, summary=excluded.summary, "
+                    "due_date=excluded.due_date, priority=excluded.priority, "
+                    "confidence=excluded.confidence, source=excluded.source",
+                    (
+                        item["message_ref"],
+                        label,
+                        str(res.get("type") or ""),
+                        str(res.get("summary") or ""),
+                        res.get("due_date"),
+                        str(res.get("priority") or ""),
+                        confidence,
+                        f"{provider}/{model}",
+                    ),
+                )
+                conn.execute("UPDATE queue SET state='classified' WHERE id=?", (item["id"],))
+                conn.execute(
+                    "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+                    "VALUES (?, 'tier1', ?, ?)",
+                    (item["message_ref"], label, confidence),
+                )
+                counts[label] += 1
+                classified += 1
+                if confidence < threshold:
+                    below += 1
+            conn.commit()
+        finally:
+            conn.close()
+
+        breakdown = ", ".join(f"{k}: {v}" for k, v in counts.items())
+        return (
+            f"Classified {classified}/{len(items)} queued item(s) via {provider}/{model}. "
+            f"{breakdown}. {below} below confidence threshold {threshold} "
+            "(flagged for Tier 3 escalation)."
+        )
 
     @tool
     async def smart_organizer_record_feedback(
