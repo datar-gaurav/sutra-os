@@ -51,22 +51,39 @@ echo ""
 
 docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>&1 | grep -v WARN
 
-# Fleet worker status (only if user opted in during install)
-PLIST_DEST="$HOME/Library/LaunchAgents/com.sutra.fleet-worker.plist"
-if [ -f "$PLIST_DEST" ]; then
-    echo ""
-    if launchctl list 2>/dev/null | grep -q com.sutra.fleet-worker; then
-        # Probe the daemon — KeepAlive should have it up on :7476
-        if curl -sf -m 2 http://127.0.0.1:7476/health >/dev/null 2>&1; then
-            echo "🛰  Fleet worker:    online at http://127.0.0.1:7476  (logs: ~/Library/Logs/sutra-fleet.log)"
-        else
-            echo "🛰  Fleet worker:    launchd job loaded but daemon not responding on :7476"
-            echo "                    Tail logs: tail -f ~/Library/Logs/sutra-fleet.log"
-        fi
+# ── Host bridges (macOS launchd agents) — start with the app ────────────────
+# Host-only I/O the containers can't do: Smart Organizer (Mail/Reminders/Notes,
+# :7477) and the Fleet worker (Gemini CLI, :7476). Loaded here so they come up
+# with ./start.sh; ./stop.sh tears them down. KeepAlive restarts them on crash
+# while loaded.
+start_bridge() {
+    # $1=label  $2=plist  $3=health-url  $4=name  $5=logpath
+    local label="$1" plist="$2" url="$3" name="$4" log="$5"
+    [ -f "$plist" ] || return 0
+    launchctl list 2>/dev/null | grep -q "$label" || launchctl load "$plist" 2>/dev/null || true
+    local up=""
+    for _ in 1 2 3 4 5; do
+        # any HTTP reply (200 or 401) means the daemon is reachable
+        if curl -s -m 2 -o /dev/null "$url"; then up=1; break; fi
+        sleep 1
+    done
+    if [ -n "$up" ]; then
+        echo "🔌 $name: online at ${url%/health}  (logs: $log)"
     else
-        echo "🛰  Fleet worker:    plist present but NOT loaded. Load with:"
-        echo "                    launchctl load $PLIST_DEST"
+        echo "🔌 $name: loaded but not responding at $url — tail: tail -f $log"
     fi
+}
+
+echo ""
+start_bridge com.sutra.smart-organizer-bridge \
+    "$HOME/Library/LaunchAgents/com.sutra.smart-organizer-bridge.plist" \
+    "http://127.0.0.1:7477/health" "Smart Organizer bridge" "~/Library/Logs/sutra-smart-organizer.log"
+
+# Fleet worker (only if user opted in during install)
+FLEET_PLIST="$HOME/Library/LaunchAgents/com.sutra.fleet-worker.plist"
+if [ -f "$FLEET_PLIST" ]; then
+    start_bridge com.sutra.fleet-worker "$FLEET_PLIST" \
+        "http://127.0.0.1:7476/health" "Fleet worker" "~/Library/Logs/sutra-fleet.log"
     if [ ! -f "$HOME/.gemini-fleet-home/.gemini/oauth_creds.json" ]; then
         echo "                    ⚠  Gemini OAuth missing — run:"
         echo "                       HOME=$HOME/.gemini-fleet-home gemini auth login"
