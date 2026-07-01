@@ -189,17 +189,25 @@ CREATE TABLE IF NOT EXISTS decision_log (
     timestamp     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS classifications (
-    message_ref   TEXT PRIMARY KEY,
-    label         TEXT,
-    type          TEXT,
-    summary       TEXT,
-    due_date      TEXT,
-    priority      TEXT,
-    confidence    REAL,
-    source        TEXT,
-    escalated     INTEGER NOT NULL DEFAULT 0,
-    needs_review  INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    message_ref     TEXT PRIMARY KEY,
+    label           TEXT,
+    type            TEXT,
+    summary         TEXT,
+    due_date        TEXT,
+    priority        TEXT,
+    confidence      REAL,
+    source          TEXT,
+    escalated       INTEGER NOT NULL DEFAULT 0,
+    needs_review    INTEGER NOT NULL DEFAULT 0,
+    reminder_id     TEXT,
+    reminder_scanned INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- Few-shot vectors for corrected examples. Plugin-local table = the
+-- 'smart-organizer-feedback' namespace (FR-26): isolated by construction.
+CREATE TABLE IF NOT EXISTS feedback_embeddings (
+    feedback_id   INTEGER PRIMARY KEY,
+    embedding     TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (
     key           TEXT PRIMARY KEY,
@@ -280,10 +288,14 @@ def _connect(config: dict) -> sqlite3.Connection:
 def _migrate(conn: sqlite3.Connection) -> None:
     """Additive migrations for stores created by an earlier version."""
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(classifications)")}
-    if "needs_review" not in cols:
-        conn.execute(
-            "ALTER TABLE classifications ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0"
-        )
+    additions = {
+        "needs_review": "INTEGER NOT NULL DEFAULT 0",
+        "reminder_id": "TEXT",
+        "reminder_scanned": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for name, decl in additions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE classifications ADD COLUMN {name} {decl}")
 
 
 def _envelope_index_path() -> Path | None:
@@ -501,14 +513,85 @@ def _load_sender_priors(conn: sqlite3.Connection, senders: list[str]) -> dict[st
     return priors
 
 
-def _load_fewshot(conn: sqlite3.Connection, limit: int = 3) -> list[dict]:
-    """Return the most recent human corrections as few-shot examples."""
+def _fetch_feedback_candidates(conn: sqlite3.Connection, limit: int = 200) -> list[dict]:
+    """Fetch recent corrections (with any stored embedding) for few-shot use."""
     rows = conn.execute(
-        "SELECT sender, subject, body_snippet, user_label "
-        "FROM feedback ORDER BY id DESC LIMIT ?",
+        "SELECT f.id, f.sender, f.subject, f.body_snippet, f.user_label, e.embedding "
+        "FROM feedback f LEFT JOIN feedback_embeddings e ON e.feedback_id = f.id "
+        "ORDER BY f.id DESC LIMIT ?",
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+async def _safe_embed(text: str) -> list[float] | None:
+    """Embed text via Sutra's embedding service; None on any failure."""
+    if not text.strip():
+        return None
+    try:
+        from app.core.embeddings import embedding_service
+
+        return await embedding_service.aembed(text)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("smart_organizer: embedding failed: %s", e)
+        return None
+
+
+async def _rank_fewshot(candidates: list[dict], query_text: str, k: int = 3) -> list[dict]:
+    """Return up to k corrections most similar to the batch (FR-15/FR-26).
+
+    Uses the namespaced feedback embeddings when available; otherwise falls back
+    to the most recent corrections (candidates are pre-sorted newest-first).
+    """
+    if not candidates:
+        return []
+    qvec = await _safe_embed(query_text)
+    embedded = [c for c in candidates if c.get("embedding")]
+    if not qvec or not embedded:
+        return candidates[:k]
+    scored = []
+    for c in embedded:
+        try:
+            vec = json.loads(c["embedding"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        scored.append((_cosine(qvec, vec), c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _, c in scored[:k]]
+
+
+def _signal_for_label(label: str) -> float:
+    """Map a corrected label to a sender-importance signal in [-1, 1]."""
+    return {"Actionable": 1.0, "Important-FYI": 0.5, "Junk": -1.0}.get(label, 0.0)
+
+
+def _update_sender_prior(conn: sqlite3.Connection, sender: str, signal: float) -> tuple[float, int]:
+    """Fold a signal into the sender's rolling importance mean. Returns (score, n)."""
+    if not sender:
+        return 0.0, 0
+    row = conn.execute(
+        "SELECT score, sample_count FROM sender_priors WHERE sender = ?", (sender,)
+    ).fetchone()
+    score, n = (row["score"], row["sample_count"]) if row else (0.0, 0)
+    new_score = (score * n + signal) / (n + 1)
+    new_n = n + 1
+    conn.execute(
+        "INSERT INTO sender_priors (sender, score, sample_count, updated_at) "
+        "VALUES (?, ?, ?, datetime('now')) "
+        "ON CONFLICT(sender) DO UPDATE SET "
+        "score=excluded.score, sample_count=excluded.sample_count, updated_at=excluded.updated_at",
+        (sender, new_score, new_n),
+    )
+    return new_score, new_n
 
 
 _SYSTEM_PROMPT = (
@@ -756,7 +839,19 @@ function run(argv) {
   var r = app.Reminder({name: title});
   app.defaultList().reminders.push(r);
   if (due) { var d = new Date(due); if (!isNaN(d.getTime())) { r.dueDate = d; } }
-  return "ok";
+  return r.id();
+}
+"""
+
+# Returns "completed" / "open" for a known reminder id, "missing" if deleted.
+_REMINDER_STATUS_JXA = """
+function run(argv) {
+  var id = argv[0];
+  var app = Application("Reminders");
+  try {
+    var r = app.reminders.byId(id);
+    return r.completed() ? "completed" : "open";
+  } catch (e) { return "missing"; }
 }
 """
 
@@ -801,11 +896,20 @@ def _daily_note_name() -> str:
     return f"Sutra Daily Digest — {datetime.now().date().isoformat()}"
 
 
-def _create_reminder(title: str, due_iso: str | None) -> bool:
-    ok, err = _osa_jxa(_REMINDER_JXA, [title or "(no subject)", due_iso or ""])
+def _create_reminder(title: str, due_iso: str | None) -> tuple[bool, str]:
+    """Create a reminder; returns (ok, reminder_id) — id enables implicit feedback."""
+    ok, out = _osa_jxa(_REMINDER_JXA, [title or "(no subject)", due_iso or ""])
     if not ok and sys.platform == "darwin":
-        logger.warning("smart_organizer: reminder creation failed: %s", err)
-    return ok
+        logger.warning("smart_organizer: reminder creation failed: %s", out)
+    return ok, (out if ok else "")
+
+
+def _reminder_status(reminder_id: str) -> str:
+    """Return 'completed' | 'open' | 'missing' | 'unknown' for a reminder id."""
+    if not reminder_id:
+        return "unknown"
+    ok, out = _osa_jxa(_REMINDER_STATUS_JXA, [reminder_id])
+    return out if ok and out in ("completed", "open", "missing") else "unknown"
 
 
 def _append_to_note(line: str) -> bool:
@@ -841,11 +945,12 @@ def _route_classified(config: dict, limit: int = 200) -> dict[str, int]:
         for r in rows:
             label = r["label"]
             headline = r["summary"] or r["subject"] or "(no subject)"
+            reminder_id = ""
             if r["needs_review"]:
                 ok = _append_to_note(f"[needs review] {label or '?'} — {r['sender']}: {headline}")
                 bucket, decision = "review", "route:fyi-review"
             elif label == "Actionable":
-                ok = _create_reminder(headline, r["due_date"])
+                ok, reminder_id = _create_reminder(headline, r["due_date"])
                 bucket, decision = "reminders", "route:reminder"
             elif label == "Junk":
                 ok, bucket, decision = True, "junk", "route:junk-discard"
@@ -855,6 +960,11 @@ def _route_classified(config: dict, limit: int = 200) -> dict[str, int]:
 
             if ok:
                 conn.execute("UPDATE queue SET state='routed' WHERE id=?", (r["qid"],))
+                if reminder_id:
+                    conn.execute(
+                        "UPDATE classifications SET reminder_id=? WHERE message_ref=?",
+                        (reminder_id, r["message_ref"]),
+                    )
                 conn.execute(
                     "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
                     "VALUES (?, 'route', ?, NULL)",
@@ -880,6 +990,60 @@ def _format_routing(counts: dict[str, int]) -> str:
     if counts["failed"]:
         parts += f", {counts['failed']} failed (left for retry)"
     return parts
+
+
+# ─── Feedback loop ───────────────────────────────────────────────────────────
+def _scan_reminder_feedback(config: dict) -> dict[str, int]:
+    """Harvest implicit feedback from Reminders state (FR-23), best-effort.
+
+    For routed Actionable items with a known reminder id that haven't been
+    scanned yet:
+      completed → confirms Actionable (positive signal + a feedback row)
+      missing   → deleted without completing (weak negative on the sender prior)
+      open      → unresolved; leave for a later scan
+    """
+    result = {"completed": 0, "deleted": 0}
+    conn = _connect(config)
+    try:
+        rows = conn.execute(
+            "SELECT c.message_ref, c.reminder_id, q.sender, q.subject "
+            "FROM classifications c JOIN queue q ON q.message_ref = c.message_ref "
+            "WHERE c.label='Actionable' AND c.reminder_id IS NOT NULL "
+            "AND c.reminder_scanned=0"
+        ).fetchall()
+        for r in rows:
+            status = _reminder_status(r["reminder_id"])
+            if status in ("unknown", "open"):
+                continue  # can't tell yet — re-check next time
+            if status == "completed":
+                conn.execute(
+                    "INSERT INTO feedback (sender, subject, body_snippet, model_label, user_label) "
+                    "VALUES (?, ?, '', 'Actionable', 'Actionable')",
+                    (r["sender"], r["subject"]),
+                )
+                _update_sender_prior(conn, r["sender"], _signal_for_label("Actionable"))
+                conn.execute(
+                    "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+                    "VALUES (?, 'feedback', 'implicit:completed', NULL)",
+                    (r["message_ref"],),
+                )
+                result["completed"] += 1
+            else:  # missing → deleted without completion
+                _update_sender_prior(conn, r["sender"], -0.3)
+                conn.execute(
+                    "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+                    "VALUES (?, 'feedback', 'implicit:deleted', NULL)",
+                    (r["message_ref"],),
+                )
+                result["deleted"] += 1
+            conn.execute(
+                "UPDATE classifications SET reminder_scanned=1 WHERE message_ref=?",
+                (r["message_ref"],),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return result
 
 
 # ─── Tools ───────────────────────────────────────────────────────────────────
@@ -1017,7 +1181,7 @@ def create_tools(agent_id: str):
                     }
                 )
             priors = _load_sender_priors(conn, [it["sender"] for it in items])
-            fewshot = _load_fewshot(conn)
+            fb_candidates = _fetch_feedback_candidates(conn)
         finally:
             conn.close()  # don't hold the store open across the model call
 
@@ -1029,6 +1193,10 @@ def create_tools(agent_id: str):
                 "No new items to classify. "
                 f"Routing pass: {_format_routing(routed)}."
             )
+
+        # Semantic few-shot: corrections most similar to this batch (FR-15/FR-26).
+        query_text = " ".join(f"{it['sender']} {it['subject']}" for it in items)
+        fewshot = await _rank_fewshot(fb_candidates, query_text)
 
         # ── Tier 1: local batch classification ──────────────────────────────
         try:
@@ -1149,6 +1317,9 @@ def create_tools(agent_id: str):
     ) -> str:
         """Record a classification correction so importance learning improves.
 
+        Logs the correction, folds it into the sender's rolling importance prior,
+        and stores an embedding of the example for future few-shot retrieval.
+
         Args:
             sender: The message sender's address.
             user_label: The correct label — one of Actionable, Important-FYI, Junk.
@@ -1156,23 +1327,106 @@ def create_tools(agent_id: str):
             body_snippet: Short stripped snippet (optional context).
             model_label: What the model originally predicted (optional).
         """
-        return _STUB
+        config = await _get_config(agent_id)
+        label = _normalize_label(user_label)
+
+        conn = _connect(config)
+        try:
+            cur = conn.execute(
+                "INSERT INTO feedback (sender, subject, body_snippet, model_label, user_label) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (sender, subject, body_snippet, model_label, label),
+            )
+            feedback_id = cur.lastrowid
+            new_score, n = _update_sender_prior(conn, sender, _signal_for_label(label))
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Embed the correction for semantic few-shot (namespaced feedback store).
+        vec = await _safe_embed(f"{sender} {subject} {body_snippet}".strip())
+        embedded = False
+        if vec:
+            conn = _connect(config)
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO feedback_embeddings (feedback_id, embedding) "
+                    "VALUES (?, ?)",
+                    (feedback_id, json.dumps(vec)),
+                )
+                conn.commit()
+                embedded = True
+            finally:
+                conn.close()
+
+        return (
+            f"Recorded correction: {sender or '(unknown)'} → {label}. "
+            f"Sender importance now {new_score:+.2f} over {n} sample(s)."
+            + ("" if embedded else " (embedding unavailable; using recency for few-shot.)")
+        )
 
     @tool
     async def smart_organizer_feedback_summary() -> str:
         """Return a pull-based summary of corrections since it was last viewed:
-        reclassifications tallied, sender priors updated, and new patterns.
+        implicit Reminder-based signals harvested, reclassifications tallied,
+        sender priors updated, and few-shot coverage.
         """
         config = await _get_config(agent_id)
+        implicit = _scan_reminder_feedback(config)  # FR-23, best-effort
+
         conn = _connect(config)
         try:
-            fb = conn.execute("SELECT COUNT(*) AS n FROM feedback").fetchone()["n"]
-            priors = conn.execute("SELECT COUNT(*) AS n FROM sender_priors").fetchone()["n"]
+            last = int(_meta_get(conn, "feedback_summary_last_id", "0") or 0)
+            rows = conn.execute(
+                "SELECT id, sender, model_label, user_label FROM feedback "
+                "WHERE id > ? ORDER BY id",
+                (last,),
+            ).fetchall()
+            new_last = max((r["id"] for r in rows), default=last)
+            reclassified = sum(
+                1 for r in rows if r["model_label"] and r["model_label"] != r["user_label"]
+            )
+            senders = {r["sender"] for r in rows if r["sender"]}
+            by_label = {label: 0 for label in LABELS}
+            for r in rows:
+                by_label[_normalize_label(r["user_label"])] += 1
+            total_priors = conn.execute(
+                "SELECT COUNT(*) AS n FROM sender_priors"
+            ).fetchone()["n"]
+            fewshot_n = conn.execute(
+                "SELECT COUNT(*) AS n FROM feedback_embeddings"
+            ).fetchone()["n"]
+            top_priors = conn.execute(
+                "SELECT sender, score, sample_count FROM sender_priors "
+                "ORDER BY sample_count DESC, ABS(score) DESC LIMIT 5"
+            ).fetchall()
+            _meta_set(conn, "feedback_summary_last_id", str(new_last))
+            conn.commit()
         finally:
             conn.close()
-        return (
-            f"{_STUB}\nFeedback log: {fb} correction(s) across {priors} sender prior(s)."
-        )
+
+        lines = []
+        implicit_total = implicit["completed"] + implicit["deleted"]
+        if implicit_total:
+            lines.append(
+                f"Implicit signals harvested: {implicit['completed']} reminder(s) completed "
+                f"(confirmed Actionable), {implicit['deleted']} deleted (possible misclassification)."
+            )
+        if rows:
+            label_str = ", ".join(f"{k}: {v}" for k, v in by_label.items())
+            lines.append(
+                f"{len(rows)} new correction(s) across {len(senders)} sender(s) — {label_str}. "
+                f"{reclassified} changed the model's label."
+            )
+        else:
+            lines.append("No new corrections since last viewed.")
+        if top_priors:
+            pr = "; ".join(
+                f"{p['sender']} {p['score']:+.2f} (n={p['sample_count']})" for p in top_priors
+            )
+            lines.append(f"Sender priors ({total_priors} total) — most-sampled: {pr}.")
+        lines.append(f"Few-shot corpus: {fewshot_n} embedded example(s).")
+        return "\n".join(lines)
 
     @tool
     async def smart_organizer_test_rules(sample: str = "") -> str:
