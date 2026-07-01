@@ -36,12 +36,17 @@ Provides:
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from langchain_core.tools import tool
+
+logger = logging.getLogger(__name__)
 
 EXTENSION_ID = "smart_organizer"
 
@@ -250,6 +255,162 @@ def _envelope_index_path() -> Path | None:
     return matches[-1] if matches else None
 
 
+# ─── Tier 0: rule engine (pure, unit-testable) ───────────────────────────────
+# Apple stores dates as CFAbsoluteTime (seconds since 2001-01-01 UTC).
+_APPLE_EPOCH_OFFSET = 978307200  # seconds between 1970-01-01 and 2001-01-01
+
+
+def _parse_lines(raw: str | None) -> list[str]:
+    """Split a newline-delimited config textarea into trimmed, non-empty lines."""
+    if not raw:
+        return []
+    return [ln.strip() for ln in str(raw).splitlines() if ln.strip()]
+
+
+def _compile_regex_rules(patterns: list[str]) -> list[tuple[str, re.Pattern]]:
+    """Compile discard regexes (case-insensitive); skip invalid ones with a log."""
+    compiled: list[tuple[str, re.Pattern]] = []
+    for pat in patterns:
+        try:
+            compiled.append((pat, re.compile(pat, re.IGNORECASE)))
+        except re.error as e:
+            logger.warning("smart_organizer: invalid Tier 0 regex %r skipped: %s", pat, e)
+    return compiled
+
+
+def _sender_matches(sender: str, entry: str) -> bool:
+    """Case-insensitive substring match — supports full addresses or bare domains."""
+    return entry.lower() in (sender or "").lower()
+
+
+def evaluate_rules(sender: str, subject: str, config: dict) -> tuple[str, str]:
+    """Decide a message's Tier 0 fate from the configured rules.
+
+    Precedence: allowlist (keep, wins over everything) > blocklist (discard) >
+    discard regex on sender/subject (discard) > default keep.
+
+    Returns:
+        (decision, reason) where decision is "keep" or "discard".
+    """
+    allow = _parse_lines(config.get("sender_allowlist"))
+    block = _parse_lines(config.get("sender_blocklist"))
+    regexes = _compile_regex_rules(_parse_lines(config.get("regex_rules")))
+
+    for entry in allow:
+        if _sender_matches(sender, entry):
+            return "keep", f"allowlist:{entry}"
+    for entry in block:
+        if _sender_matches(sender, entry):
+            return "discard", f"blocklist:{entry}"
+    haystack = f"{sender}\n{subject}"
+    for pat, rx in regexes:
+        if rx.search(haystack):
+            return "discard", f"regex:{pat}"
+    return "keep", "default"
+
+
+# ─── Tier 0: Apple Mail Envelope Index reader (read-only, macOS) ──────────────
+def _apple_time_to_iso(value) -> str | None:
+    """Convert an Envelope Index timestamp to an ISO-8601 UTC string, tolerantly.
+
+    Values are typically CFAbsoluteTime (seconds since 2001). Some rows/versions
+    already store Unix epoch; distinguish by magnitude.
+    """
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    # A post-2001 CFAbsoluteTime is smaller than the equivalent Unix epoch by
+    # the offset; anything already larger than a 2001 Unix epoch is Unix.
+    if ts < _APPLE_EPOCH_OFFSET:
+        ts += _APPLE_EPOCH_OFFSET
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _open_envelope_ro(path: Path) -> sqlite3.Connection:
+    """Open the Envelope Index read-only, tolerating Mail's live locks."""
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        # Fall back to immutable if the live DB is locked (may miss WAL tail).
+        conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _read_envelope_messages(after_rowid: int, limit: int) -> list[dict]:
+    """Return new messages (ROWID > after_rowid) from the Mail Envelope Index.
+
+    Adapts to schema variation by inspecting available columns. Returns [] if
+    Mail is unavailable or the schema can't be read (caller degrades gracefully).
+    """
+    env_path = _envelope_index_path()
+    if env_path is None:
+        return []
+
+    conn = _open_envelope_ro(env_path)
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+        if not {"sender", "subject", "date_received"} <= cols:
+            logger.warning("smart_organizer: unexpected Envelope Index schema: %s", sorted(cols))
+            return []
+        msg_id_expr = "m.message_id" if "message_id" in cols else "NULL"
+        read_expr = "m.read" if "read" in cols else "NULL"
+        query = f"""
+            SELECT m.ROWID           AS rowid,
+                   {msg_id_expr}     AS message_id,
+                   a.address         AS sender,
+                   s.subject         AS subject,
+                   m.date_received   AS date_received,
+                   {read_expr}       AS read_flag
+            FROM messages m
+            LEFT JOIN addresses a ON a.ROWID = m.sender
+            LEFT JOIN subjects  s ON s.ROWID = m.subject
+            WHERE m.ROWID > ?
+            ORDER BY m.ROWID ASC
+            LIMIT ?
+        """
+        rows = conn.execute(query, (after_rowid, max(1, limit))).fetchall()
+    except sqlite3.Error as e:
+        logger.warning("smart_organizer: Envelope Index read failed: %s", e)
+        return []
+    finally:
+        conn.close()
+
+    out: list[dict] = []
+    for r in rows:
+        out.append(
+            {
+                "rowid": r["rowid"],
+                "message_id": r["message_id"] or f"rowid:{r['rowid']}",
+                "sender": r["sender"] or "",
+                "subject": r["subject"] or "",
+                "received_at": _apple_time_to_iso(r["date_received"]),
+                "read": bool(r["read_flag"]) if r["read_flag"] is not None else None,
+            }
+        )
+    return out
+
+
+# ─── Plugin-store helpers ────────────────────────────────────────────────────
+def _meta_get(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def _meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, str(value)),
+    )
+
+
 # ─── Tools ───────────────────────────────────────────────────────────────────
 def create_tools(agent_id: str):
     _STUB = (
@@ -262,18 +423,71 @@ def create_tools(agent_id: str):
         """Tier 0 — read newly-arrived Apple Mail, apply the discard rules, and
         enqueue survivors for the next batch cycle.
 
+        Reads message metadata (sender, subject, date) from Mail's local
+        Envelope Index without invoking any LLM, applies the configured
+        allow/block/regex rules, discards junk (logged for audit), and queues
+        the rest for Tier 1 classification. Only messages newer than the last
+        ingest are considered.
+
         Args:
             limit: Max number of new messages to pull this pass (default 50).
         """
         config = await _get_config(agent_id)
+
+        if sys.platform != "darwin":
+            return "Apple Mail ingestion is only available on macOS; nothing ingested."
+        if _envelope_index_path() is None:
+            return "Mail Envelope Index not found under ~/Library/Mail; nothing ingested."
+
         conn = _connect(config)
         try:
+            after = int(_meta_get(conn, "last_rowid", "0") or 0)
+            messages = _read_envelope_messages(after, limit)
+            if not messages:
+                return f"No new mail since last ingest (high-water ROWID {after})."
+
+            discarded = 0
+            max_rowid = after
+            for msg in messages:
+                max_rowid = max(max_rowid, int(msg["rowid"]))
+                decision, reason = evaluate_rules(msg["sender"], msg["subject"], config)
+                conn.execute(
+                    "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+                    "VALUES (?, 'tier0', ?, NULL)",
+                    (msg["message_id"], f"{decision}:{reason}"),
+                )
+                if decision == "discard":
+                    discarded += 1
+                    continue
+                # Body is fetched lazily at Tier 1; store the subject as the
+                # initial snippet so the queue row is human-readable.
+                conn.execute(
+                    "INSERT INTO queue "
+                    "(message_ref, sender, subject, received_at, body_snippet, urgency, state) "
+                    "VALUES (?, ?, ?, ?, ?, NULL, 'pending') "
+                    "ON CONFLICT(message_ref) DO NOTHING",
+                    (
+                        msg["message_id"],
+                        msg["sender"],
+                        msg["subject"],
+                        msg["received_at"],
+                        msg["subject"],
+                    ),
+                )
+            _meta_set(conn, "last_rowid", str(max_rowid))
+            conn.commit()
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM queue WHERE state = 'pending'"
             ).fetchone()["n"]
         finally:
             conn.close()
-        return f"{_STUB}\nQueue currently holds {pending} pending item(s)."
+
+        kept = len(messages) - discarded
+        return (
+            f"Ingested {len(messages)} new message(s): kept {kept}, discarded {discarded} "
+            f"by Tier 0 rules. Queue now holds {pending} pending item(s) "
+            f"(high-water ROWID {max_rowid})."
+        )
 
     @tool
     async def smart_organizer_triage_urgent(message_ref: str) -> str:
@@ -334,9 +548,34 @@ def create_tools(agent_id: str):
         sample line to preview whether it would be kept or discarded.
 
         Args:
-            sample: A "sender | subject" line to test against the rules.
+            sample: A "sender | subject" line to test, e.g.
+                "no-reply@promo.example.com | 50% off — unsubscribe".
+                If omitted, returns a summary of the loaded rules.
         """
-        return _STUB
+        config = await _get_config(agent_id)
+        allow = _parse_lines(config.get("sender_allowlist"))
+        block = _parse_lines(config.get("sender_blocklist"))
+        raw_regexes = _parse_lines(config.get("regex_rules"))
+        compiled = _compile_regex_rules(raw_regexes)
+        invalid = [p for p in raw_regexes if p not in {pat for pat, _ in compiled}]
+
+        summary = (
+            f"Loaded Tier 0 rules — allowlist: {len(allow)}, blocklist: {len(block)}, "
+            f"regex: {len(compiled)} valid"
+            + (f" ({len(invalid)} invalid: {invalid})" if invalid else "")
+            + "."
+        )
+        if not sample.strip():
+            return summary
+
+        sender, _, subject = sample.partition("|")
+        sender, subject = sender.strip(), subject.strip()
+        decision, reason = evaluate_rules(sender, subject, config)
+        verb = "KEEP → queue for classification" if decision == "keep" else "DISCARD"
+        return (
+            f"{summary}\n\nSample: sender={sender!r} subject={subject!r}\n"
+            f"Result: {verb}  (matched rule: {reason})"
+        )
 
     return [
         smart_organizer_ingest,
