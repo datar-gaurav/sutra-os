@@ -16,11 +16,31 @@ Then, in **Settings ▸ Integrations ▸ Smart Organizer**, set:
 - **Host Bridge URL**: `http://host.docker.internal:7477`
 - **Host Bridge Token**: the `SMART_ORGANIZER_BRIDGE_TOKEN` value from `backend/.env`
 
-### First run: grant Automation access
+### macOS permissions (two separate grants)
 
-The first time the daemon touches Mail / Reminders / Notes, macOS prompts for
-Automation permission. Approve it under **System Settings ▸ Privacy & Security ▸
-Automation**. Until granted, those endpoints return empty results.
+The bridge needs **two** different privacy permissions:
+
+1. **Full Disk Access** — to read Mail's Envelope Index file (`~/Library/Mail`),
+   which is a protected location. Add the process that runs the bridge under
+   **System Settings ▸ Privacy & Security ▸ Full Disk Access**. For the launchd
+   agent that's the Python interpreter (e.g. `/opt/homebrew/bin/python3` or
+   `/usr/bin/python3`); drag it in with **+**, then restart the agent. Without
+   this, `/health` reports `mail_status: needs_fda` and mail endpoints return 503
+   — even though Apple Mail is set up.
+2. **Automation** — to script Mail / Reminders / Notes via `osascript`. macOS
+   prompts on first use; approve under **System Settings ▸ Privacy & Security ▸
+   Automation**.
+
+Check readiness any time:
+
+```bash
+curl -s -H "Authorization: Bearer $SMART_ORGANIZER_BRIDGE_TOKEN" \
+     http://127.0.0.1:7477/health
+# {"ok": true, "mail_status": "ok", "envelope_index": ".../Envelope Index", ...}
+```
+
+`mail_status` is one of `ok` / `no_mail` / `needs_fda` / `no_index`, each with a
+`hint`.
 
 ### Manual control
 

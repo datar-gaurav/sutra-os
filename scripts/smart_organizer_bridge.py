@@ -95,15 +95,55 @@ _APPLE_EPOCH_OFFSET = 978307200
 
 
 # ── Mail Envelope Index (read-only) ───────────────────────────────────────────
-def _envelope_index_path() -> Path | None:
-    """Locate the most recent Mail.app Envelope Index."""
-    root = Path(_MAIL_ROOT_OVERRIDE).expanduser() if _MAIL_ROOT_OVERRIDE else Path(
-        os.path.expanduser("~/Library/Mail")
+def _mail_root() -> Path:
+    return (
+        Path(_MAIL_ROOT_OVERRIDE).expanduser()
+        if _MAIL_ROOT_OVERRIDE
+        else Path(os.path.expanduser("~/Library/Mail"))
     )
+
+
+def _mail_status() -> tuple[str, Path | None]:
+    """Diagnose Mail readability. Returns (status, envelope_index_path).
+
+    status is one of:
+      ok         — Envelope Index found and the directory is readable
+      no_mail    — ~/Library/Mail does not exist (Apple Mail not set up)
+      needs_fda  — the directory exists but can't be read (Full Disk Access)
+      no_index   — directory readable but no Envelope Index inside
+    """
+    root = _mail_root()
     if not root.exists():
-        return None
+        return "no_mail", None
+    try:
+        # Enumerating the protected dir raises PermissionError without Full Disk Access.
+        next(root.iterdir(), None)
+    except PermissionError:
+        return "needs_fda", None
+    except OSError:
+        return "needs_fda", None
     matches = sorted(root.glob("V*/MailData/Envelope Index"))
-    return matches[-1] if matches else None
+    if matches:
+        return "ok", matches[-1]
+    return "no_index", None
+
+
+_MAIL_STATUS_HINT = {
+    "ok": None,
+    "no_mail": "Apple Mail is not set up (~/Library/Mail does not exist).",
+    "needs_fda": (
+        "~/Library/Mail can't be read — grant Full Disk Access to the process running "
+        "this bridge (System Settings > Privacy & Security > Full Disk Access), then "
+        "restart it."
+    ),
+    "no_index": "~/Library/Mail is readable but no 'Envelope Index' was found inside.",
+}
+
+
+def _envelope_index_path() -> Path | None:
+    """Locate the most recent Mail.app Envelope Index (None if unreadable/absent)."""
+    status, path = _mail_status()
+    return path if status == "ok" else None
 
 
 def _apple_time_to_iso(value) -> str | None:
@@ -326,10 +366,12 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     # ── Handlers ──────────────────────────────────────────────────────────────
     def _handle_health(self) -> None:
-        env_path = _envelope_index_path()
+        status, env_path = _mail_status()
         self._send_json({
-            "ok": env_path is not None,
+            "ok": status == "ok",
+            "mail_status": status,
             "envelope_index": str(env_path) if env_path else None,
+            "hint": _MAIL_STATUS_HINT.get(status),
             "version": VERSION,
         })
 
@@ -340,6 +382,13 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             limit = int(q.get("limit", "50"))
         except ValueError:
             self._send_json({"detail": "after/limit must be integers"}, 400)
+            return
+        status, _ = _mail_status()
+        if status != "ok":
+            self._send_json(
+                {"detail": _MAIL_STATUS_HINT.get(status, "Mail unavailable"), "mail_status": status},
+                503,
+            )
             return
         self._send_json({"messages": _read_envelope_messages(after, limit)})
 
@@ -408,11 +457,11 @@ def main() -> None:
             '         Generate one with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"',
             file=sys.stderr,
         )
-    env_path = _envelope_index_path()
-    if env_path:
+    status, env_path = _mail_status()
+    if status == "ok":
         print(f"[bridge] Envelope Index: {env_path}", flush=True)
     else:
-        print("[bridge] WARNING: Mail Envelope Index not found under ~/Library/Mail.", file=sys.stderr)
+        print(f"[bridge] WARNING: mail_status={status} — {_MAIL_STATUS_HINT.get(status)}", file=sys.stderr)
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", BRIDGE_PORT), BridgeHandler)
     print(f"[bridge] Listening on http://127.0.0.1:{BRIDGE_PORT}  (version {VERSION})", flush=True)

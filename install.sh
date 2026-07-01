@@ -238,8 +238,10 @@ if [[ "$enable_so" =~ ^[Yy]$ ]]; then
             "$SO_PLIST_TEMPLATE" > "$SO_PLIST_DEST"
         chmod 600 "$SO_PLIST_DEST"   # contains the bridge token
         ok "Wrote $SO_PLIST_DEST"
-        echo "    NOTE: first run will prompt for Automation access to Mail,"
-        echo "    Reminders, and Notes — approve it in System Settings > Privacy."
+        echo "    NOTE: grant TWO permissions in System Settings > Privacy & Security:"
+        echo "      1. Full Disk Access — add python3 (to read ~/Library/Mail)"
+        echo "      2. Automation — approve on first Mail/Reminders/Notes use"
+        echo "    Check with: curl -H 'Authorization: Bearer <token>' localhost:7477/health"
         read -rp "$(echo -e ${BOLD}Load the launchd agent now?${RESET}) [y/N] " so_load_now
         if [[ "$so_load_now" =~ ^[Yy]$ ]]; then
             launchctl unload "$SO_PLIST_DEST" 2>/dev/null || true
