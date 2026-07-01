@@ -49,8 +49,9 @@ import logging
 import os
 import re
 import sqlite3
-from typing import Any
+from datetime import date
 from pathlib import Path
+from typing import Any
 
 from langchain_core.tools import tool
 
@@ -640,13 +641,19 @@ _SYSTEM_PROMPT = (
     "  source_subject (string)\n"
     "Actionable = the user must do something; Important-FYI = worth knowing but "
     "no action; Junk = promotional/automated/no value. Be conservative with "
-    "confidence when signals conflict."
+    "confidence when signals conflict. Resolve relative dates (e.g. \"Friday\", "
+    "\"tomorrow\", \"EOD\") against the current date given below; if a message "
+    "has no deadline, set due_date to null — never guess a date."
 )
 
 
 def _build_user_prompt(items: list[dict], priors: dict[str, float], fewshot: list[dict]) -> str:
     """Assemble the batch user prompt with sender priors + few-shot corrections."""
-    parts: list[str] = []
+    today = date.today()
+    parts: list[str] = [
+        f"Current date: {today.isoformat()} ({today.strftime('%A')}). "
+        "Resolve any relative deadlines against this."
+    ]
     if priors:
         prior_lines = "\n".join(
             f"  {s}: importance {score:+.2f}" for s, score in priors.items()
