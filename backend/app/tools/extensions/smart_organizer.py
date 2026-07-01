@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS classifications (
     confidence    REAL,
     source        TEXT,
     escalated     INTEGER NOT NULL DEFAULT 0,
+    needs_review  INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS meta (
@@ -251,6 +252,15 @@ def _get_float(value, default: float) -> float:
         return default
 
 
+def _get_bool(value, default: bool) -> bool:
+    """Coerce a config value to bool; accepts true/false/1/0/yes/no strings."""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _connect(config: dict) -> sqlite3.Connection:
     """Open (creating if needed) the plugin-local SQLite store with schema applied.
 
@@ -262,8 +272,18 @@ def _connect(config: dict) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive migrations for stores created by an earlier version."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(classifications)")}
+    if "needs_review" not in cols:
+        conn.execute(
+            "ALTER TABLE classifications ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _envelope_index_path() -> Path | None:
@@ -586,6 +606,148 @@ def _normalize_label(raw) -> str:
     return "Important-FYI"
 
 
+async def _run_classifier(
+    purpose_id: str,
+    system_prompt: str,
+    items: list[dict],
+    priors: dict[str, float],
+    fewshot: list[dict],
+) -> tuple[str, str, list[dict]]:
+    """Resolve a model for ``purpose_id`` and classify ``items`` in one pass.
+
+    Shared by Tier 1 (local batch) and Tier 3 (frontier escalation) — both route
+    through the smart router so they honor rate limits, fallback slots, and the
+    existing provider keys. Raises on routing/model failure; the caller decides
+    how to degrade.
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from app.core.callbacks import UsageCallbackHandler
+    from app.core.llm_registry import llm_registry
+    from app.core.smart_router import resolve_model
+    from app.db.session import async_session_factory
+
+    user_prompt = _build_user_prompt(items, priors, fewshot)
+    est_tokens = (len(system_prompt) + len(user_prompt)) // 4 + 256 * len(items)
+    async with async_session_factory() as db:
+        provider, model = await resolve_model(purpose_id, est_tokens, db)
+
+    llm = llm_registry.get_chat_model(
+        provider, model, temperature=0.0, max_tokens=4096, streaming=False
+    )
+    response = await llm.ainvoke(
+        [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
+        config={"callbacks": [UsageCallbackHandler()]},
+    )
+    content = response.content
+    if isinstance(content, list):
+        content = "\n".join(
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return provider, model, _parse_classifications(str(content))
+
+
+# ─── Tier 3: escalation gate ─────────────────────────────────────────────────
+_ESCALATION_SNIPPET_CHARS = 800
+_ESCALATION_SYSTEM_PROMPT = (
+    "These are hard triage cases a smaller model was unsure about, or that carry "
+    "legal/financial weight. Read carefully and give your most reliable "
+    "classification.\n\n" + _SYSTEM_PROMPT
+)
+_LEGAL_FINANCIAL_RE = re.compile(
+    r"\b(lawsuit|subpoena|contract|invoice|payment|wire\s+transfer|overdue|past\s+due|"
+    r"tax|irs|legal|attorney|settlement|refund|penalt|liabilit|deadline)\w*",
+    re.IGNORECASE,
+)
+_DATE_RE = re.compile(
+    r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b"
+)
+
+
+def _needs_escalation(res: dict, item: dict, threshold: float) -> tuple[bool, str]:
+    """Decide whether a Tier 1 result should be escalated to the frontier model.
+
+    Triggers: low confidence, legal/financial language, or ambiguous/
+    self-contradictory extraction (label↔type mismatch, Junk with a due date,
+    or conflicting date signals).
+    """
+    confidence = _get_float(res.get("confidence"), 0.0)
+    if confidence < threshold:
+        return True, f"low_confidence({confidence:.2f}<{threshold})"
+
+    text = f"{item['subject']}\n{item['body']}"
+    if _LEGAL_FINANCIAL_RE.search(text):
+        return True, "legal_financial"
+
+    label = _normalize_label(res.get("label"))
+    typ = str(res.get("type") or "").strip().lower()
+    if (label == "Actionable" and typ == "fyi") or (label == "Important-FYI" and typ == "task"):
+        return True, "label_type_mismatch"
+    if label == "Junk" and res.get("due_date"):
+        return True, "junk_with_due_date"
+    if len(set(_DATE_RE.findall(text))) >= 2:
+        return True, "conflicting_dates"
+    return False, ""
+
+
+def _upsert_classification(
+    conn: sqlite3.Connection,
+    message_ref: str,
+    res: dict,
+    label: str,
+    confidence: float,
+    source: str,
+    escalated: int = 0,
+) -> None:
+    """Insert or replace a classification row, resetting review state."""
+    conn.execute(
+        "INSERT INTO classifications "
+        "(message_ref, label, type, summary, due_date, priority, confidence, "
+        " source, escalated, needs_review) "
+        "VALUES (?,?,?,?,?,?,?,?,?,0) "
+        "ON CONFLICT(message_ref) DO UPDATE SET "
+        "label=excluded.label, type=excluded.type, summary=excluded.summary, "
+        "due_date=excluded.due_date, priority=excluded.priority, "
+        "confidence=excluded.confidence, source=excluded.source, "
+        "escalated=excluded.escalated, needs_review=0",
+        (
+            message_ref,
+            label,
+            str(res.get("type") or ""),
+            str(res.get("summary") or ""),
+            res.get("due_date"),
+            str(res.get("priority") or ""),
+            confidence,
+            source,
+            escalated,
+        ),
+    )
+
+
+def _flag_needs_review(conn: sqlite3.Connection, message_ref: str, reason: str) -> None:
+    """Mark a classified item for manual review (frontier off/unavailable)."""
+    conn.execute(
+        "UPDATE classifications SET needs_review=1 WHERE message_ref=?", (message_ref,)
+    )
+    conn.execute(
+        "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+        "VALUES (?, 'tier3', ?, NULL)",
+        (message_ref, f"needs-review:{reason}"),
+    )
+
+
+def _mark_all_review(config: dict, candidates: list[tuple[dict, str]]) -> int:
+    """Flag every escalation candidate for manual review; returns the count."""
+    conn = _connect(config)
+    try:
+        for item, reason in candidates:
+            _flag_needs_review(conn, item["message_ref"], reason)
+        conn.commit()
+    finally:
+        conn.close()
+    return len(candidates)
+
+
 # ─── Tools ───────────────────────────────────────────────────────────────────
 def create_tools(agent_id: str):
     _STUB = (
@@ -676,15 +838,17 @@ def create_tools(agent_id: str):
 
     @tool
     async def smart_organizer_run_batch(limit: int = 50) -> str:
-        """Tier 1 — classify and extract the entire queued batch in a single
-        local-model pass routed through the configured Batch LLM Purpose.
+        """Tier 1 (+ Tier 3) — classify the queued batch in a single local-model
+        pass routed through the configured Batch LLM Purpose, then escalate the
+        hard cases to the Frontier LLM Purpose.
 
         Fetches message bodies lazily (Apple Mail, macOS), injects per-sender
         importance priors and recent user corrections, and asks the model for a
-        strict JSON array. Results are stored and each item is marked
-        'classified'; items below the confidence threshold are flagged for
-        Tier 3 escalation (performed by a later stage). On any model/routing
-        failure, items stay queued for the next cycle.
+        strict JSON array. Items with low confidence, legal/financial language,
+        or contradictory extractions are escalated to the frontier model (only a
+        stripped snippet is sent). If escalation is disabled or has no purpose,
+        those items are flagged for manual review instead. On any model/routing
+        failure, affected items stay queued for the next cycle.
 
         Args:
             limit: Max queued items to classify this pass (default 50).
@@ -694,6 +858,8 @@ def create_tools(agent_id: str):
         if not batch_purpose_id:
             return "No Batch LLM Purpose configured (batch_purpose_id); cannot classify."
         threshold = _get_float(config.get("confidence_threshold"), DEFAULT_CONFIDENCE_THRESHOLD)
+        frontier_enabled = _get_bool(config.get("frontier_enabled"), True)
+        frontier_purpose_id = (config.get("frontier_purpose_id") or "").strip()
 
         conn = _connect(config)
         try:
@@ -720,47 +886,18 @@ def create_tools(agent_id: str):
                 )
             priors = _load_sender_priors(conn, [it["sender"] for it in items])
             fewshot = _load_fewshot(conn)
-            user_prompt = _build_user_prompt(items, priors, fewshot)
         finally:
             conn.close()  # don't hold the store open across the model call
 
-        # Route through the purpose (honors rate limits, fallback slots, keys).
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        from app.core.callbacks import UsageCallbackHandler
-        from app.core.llm_registry import llm_registry
-        from app.core.smart_router import resolve_model
-        from app.db.session import async_session_factory
-
-        est_tokens = (len(_SYSTEM_PROMPT) + len(user_prompt)) // 4 + 256 * len(items)
+        # ── Tier 1: local batch classification ──────────────────────────────
         try:
-            async with async_session_factory() as db:
-                provider, model = await resolve_model(batch_purpose_id, est_tokens, db)
-        except Exception as e:  # noqa: BLE001
-            return f"Could not resolve a model for the batch purpose: {e}. Items remain queued."
-
-        llm = llm_registry.get_chat_model(
-            provider, model, temperature=0.0, max_tokens=4096, streaming=False
-        )
-        try:
-            response = await llm.ainvoke(
-                [SystemMessage(content=_SYSTEM_PROMPT), HumanMessage(content=user_prompt)],
-                config={"callbacks": [UsageCallbackHandler()]},
+            provider, model, results = await _run_classifier(
+                batch_purpose_id, _SYSTEM_PROMPT, items, priors, fewshot
             )
         except Exception as e:  # noqa: BLE001
             return (
-                f"Batch classification model call failed ({provider}/{model}): {e}. "
-                "Items remain queued."
+                f"Tier 1 batch classification failed ({e}). Items remain queued."
             )
-
-        content = response.content
-        if isinstance(content, list):
-            content = "\n".join(
-                b.get("text", "")
-                for b in content
-                if isinstance(b, dict) and b.get("type") == "text"
-            )
-        results = _parse_classifications(str(content))
         if not results:
             return (
                 f"Model ({provider}/{model}) returned no parseable classifications; "
@@ -769,7 +906,8 @@ def create_tools(agent_id: str):
 
         by_id = {it["id"]: it for it in items}
         counts = {label: 0 for label in LABELS}
-        below = classified = 0
+        classified = 0
+        candidates: list[tuple[dict, str]] = []  # (item, escalation_reason)
         conn = _connect(config)
         try:
             for res in results:
@@ -778,25 +916,8 @@ def create_tools(agent_id: str):
                     continue
                 label = _normalize_label(res.get("label"))
                 confidence = _get_float(res.get("confidence"), 0.0)
-                conn.execute(
-                    "INSERT INTO classifications "
-                    "(message_ref, label, type, summary, due_date, priority, "
-                    " confidence, source, escalated) "
-                    "VALUES (?,?,?,?,?,?,?,?,0) "
-                    "ON CONFLICT(message_ref) DO UPDATE SET "
-                    "label=excluded.label, type=excluded.type, summary=excluded.summary, "
-                    "due_date=excluded.due_date, priority=excluded.priority, "
-                    "confidence=excluded.confidence, source=excluded.source",
-                    (
-                        item["message_ref"],
-                        label,
-                        str(res.get("type") or ""),
-                        str(res.get("summary") or ""),
-                        res.get("due_date"),
-                        str(res.get("priority") or ""),
-                        confidence,
-                        f"{provider}/{model}",
-                    ),
+                _upsert_classification(
+                    conn, item["message_ref"], res, label, confidence, f"{provider}/{model}"
                 )
                 conn.execute("UPDATE queue SET state='classified' WHERE id=?", (item["id"],))
                 conn.execute(
@@ -806,17 +927,71 @@ def create_tools(agent_id: str):
                 )
                 counts[label] += 1
                 classified += 1
-                if confidence < threshold:
-                    below += 1
+                should, reason = _needs_escalation(res, item, threshold)
+                if should:
+                    candidates.append((item, reason))
             conn.commit()
         finally:
             conn.close()
 
+        # ── Tier 3: frontier escalation (only stripped snippets leave device) ─
+        escalated = review = 0
+        tier3_note = ""
+        if candidates:
+            if frontier_enabled and frontier_purpose_id:
+                esc_items = [
+                    {**item, "body": (item["body"] or "")[:_ESCALATION_SNIPPET_CHARS]}
+                    for item, _ in candidates
+                ]
+                cand_by_id = {it["id"]: it for it in esc_items}
+                try:
+                    fprovider, fmodel, fresults = await _run_classifier(
+                        frontier_purpose_id, _ESCALATION_SYSTEM_PROMPT, esc_items, priors, fewshot
+                    )
+                except Exception as e:  # noqa: BLE001
+                    fresults = []
+                    tier3_note = f" Frontier escalation failed ({e}); flagged for manual review."
+                if fresults:
+                    conn = _connect(config)
+                    try:
+                        seen_ids = set()
+                        for res in fresults:
+                            item = cand_by_id.get(res.get("id"))
+                            if item is None:
+                                continue
+                            seen_ids.add(item["id"])
+                            label = _normalize_label(res.get("label"))
+                            confidence = _get_float(res.get("confidence"), 0.0)
+                            _upsert_classification(
+                                conn, item["message_ref"], res, label, confidence,
+                                f"{fprovider}/{fmodel}", escalated=1,
+                            )
+                            conn.execute(
+                                "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+                                "VALUES (?, 'tier3', ?, ?)",
+                                (item["message_ref"], label, confidence),
+                            )
+                            escalated += 1
+                        # Any candidate the frontier didn't return → manual review.
+                        for item, reason in candidates:
+                            if item["id"] not in seen_ids:
+                                _flag_needs_review(conn, item["message_ref"], reason)
+                                review += 1
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    tier3_note = f" Escalated {escalated} to {fprovider}/{fmodel}."
+                else:
+                    review += _mark_all_review(config, candidates)
+            else:
+                why = "disabled" if not frontier_enabled else "no frontier purpose set"
+                review += _mark_all_review(config, candidates)
+                tier3_note = f" Escalation {why}; {review} flagged for manual review."
+
         breakdown = ", ".join(f"{k}: {v}" for k, v in counts.items())
         return (
             f"Classified {classified}/{len(items)} queued item(s) via {provider}/{model}. "
-            f"{breakdown}. {below} below confidence threshold {threshold} "
-            "(flagged for Tier 3 escalation)."
+            f"{breakdown}. {len(candidates)} hard case(s) gated for Tier 3.{tier3_note}"
         )
 
     @tool
