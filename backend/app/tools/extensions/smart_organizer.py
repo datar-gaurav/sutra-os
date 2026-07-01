@@ -748,6 +748,140 @@ def _mark_all_review(config: dict, candidates: list[tuple[dict, str]]) -> int:
     return len(candidates)
 
 
+# ─── Output routing: Apple Reminders + daily Apple Note (macOS) ───────────────
+_REMINDER_JXA = """
+function run(argv) {
+  var title = argv[0]; var due = argv[1] || "";
+  var app = Application("Reminders");
+  var r = app.Reminder({name: title});
+  app.defaultList().reminders.push(r);
+  if (due) { var d = new Date(due); if (!isNaN(d.getTime())) { r.dueDate = d; } }
+  return "ok";
+}
+"""
+
+_NOTE_JXA = """
+function run(argv) {
+  var noteName = argv[0]; var line = argv[1];
+  var app = Application("Notes");
+  var esc = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  var notes = app.notes;
+  for (var i = 0; i < notes.length; i++) {
+    if (notes[i].name() === noteName) {
+      notes[i].body = notes[i].body() + "<div>" + esc + "</div>";
+      return "appended";
+    }
+  }
+  var n = app.Note({name: noteName, body: "<div><b>" + noteName + "</b></div><div>" + esc + "</div>"});
+  app.defaultAccount().notes.push(n);
+  return "created";
+}
+"""
+
+
+def _osa_jxa(script: str, args: list[str], timeout: float = 8.0) -> tuple[bool, str]:
+    """Run a JavaScript-for-Automation script with argv (macOS). Best-effort."""
+    if sys.platform != "darwin":
+        return False, "not macOS"
+    try:
+        proc = subprocess.run(
+            ["osascript", "-l", "JavaScript", "-e", script, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return False, str(e)
+    if proc.returncode != 0:
+        return False, (proc.stderr or "").strip()
+    return True, (proc.stdout or "").strip()
+
+
+def _daily_note_name() -> str:
+    return f"Sutra Daily Digest — {datetime.now().date().isoformat()}"
+
+
+def _create_reminder(title: str, due_iso: str | None) -> bool:
+    ok, err = _osa_jxa(_REMINDER_JXA, [title or "(no subject)", due_iso or ""])
+    if not ok and sys.platform == "darwin":
+        logger.warning("smart_organizer: reminder creation failed: %s", err)
+    return ok
+
+
+def _append_to_note(line: str) -> bool:
+    ok, err = _osa_jxa(_NOTE_JXA, [_daily_note_name(), line])
+    if not ok and sys.platform == "darwin":
+        logger.warning("smart_organizer: note append failed: %s", err)
+    return ok
+
+
+def _route_classified(config: dict, limit: int = 200) -> dict[str, int]:
+    """Route already-classified items to Reminders / the daily Note / audit.
+
+    Operates on queue rows in state 'classified' (independent of which run
+    produced them), so a routing failure is retried on the next pass. Only
+    successfully-routed items advance to state 'routed'.
+
+    Routing map:
+      needs_review   → daily Note with a "[needs review]" marker
+      Actionable     → Apple Reminder (with due date when extracted)
+      Important-FYI  → daily Note (one line, appended)
+      Junk           → audit-only, nothing written to a user surface
+    """
+    counts = {"reminders": 0, "fyi": 0, "review": 0, "junk": 0, "failed": 0}
+    conn = _connect(config)
+    try:
+        rows = conn.execute(
+            "SELECT q.id AS qid, q.message_ref, q.sender, q.subject, "
+            "       c.label, c.summary, c.due_date, c.needs_review "
+            "FROM queue q JOIN classifications c ON c.message_ref = q.message_ref "
+            "WHERE q.state = 'classified' ORDER BY q.id ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        for r in rows:
+            label = r["label"]
+            headline = r["summary"] or r["subject"] or "(no subject)"
+            if r["needs_review"]:
+                ok = _append_to_note(f"[needs review] {label or '?'} — {r['sender']}: {headline}")
+                bucket, decision = "review", "route:fyi-review"
+            elif label == "Actionable":
+                ok = _create_reminder(headline, r["due_date"])
+                bucket, decision = "reminders", "route:reminder"
+            elif label == "Junk":
+                ok, bucket, decision = True, "junk", "route:junk-discard"
+            else:  # Important-FYI (and any unexpected label) → digest
+                ok = _append_to_note(f"{r['sender']}: {headline}")
+                bucket, decision = "fyi", "route:fyi"
+
+            if ok:
+                conn.execute("UPDATE queue SET state='routed' WHERE id=?", (r["qid"],))
+                conn.execute(
+                    "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+                    "VALUES (?, 'route', ?, NULL)",
+                    (r["message_ref"], decision),
+                )
+                counts[bucket] += 1
+            else:
+                counts["failed"] += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return counts
+
+
+def _format_routing(counts: dict[str, int]) -> str:
+    total = counts["reminders"] + counts["fyi"] + counts["review"] + counts["junk"]
+    if total == 0 and counts["failed"] == 0:
+        return "nothing to route"
+    parts = (
+        f"{counts['reminders']} reminder(s), {counts['fyi']} FYI note(s), "
+        f"{counts['review']} needs-review, {counts['junk']} junk discarded"
+    )
+    if counts["failed"]:
+        parts += f", {counts['failed']} failed (left for retry)"
+    return parts
+
+
 # ─── Tools ───────────────────────────────────────────────────────────────────
 def create_tools(agent_id: str):
     _STUB = (
@@ -868,8 +1002,6 @@ def create_tools(agent_id: str):
                 "FROM queue WHERE state = 'pending' ORDER BY id ASC LIMIT ?",
                 (max(1, limit),),
             ).fetchall()
-            if not rows:
-                return "Queue is empty — nothing to classify."
             items = []
             for r in rows:
                 body = _fetch_body_applescript(r["message_ref"]) or (
@@ -888,6 +1020,15 @@ def create_tools(agent_id: str):
             fewshot = _load_fewshot(conn)
         finally:
             conn.close()  # don't hold the store open across the model call
+
+        # Nothing new to classify — still flush any previously-classified items
+        # whose routing may have failed on an earlier pass.
+        if not items:
+            routed = _route_classified(config)
+            return (
+                "No new items to classify. "
+                f"Routing pass: {_format_routing(routed)}."
+            )
 
         # ── Tier 1: local batch classification ──────────────────────────────
         try:
@@ -988,10 +1129,14 @@ def create_tools(agent_id: str):
                 review += _mark_all_review(config, candidates)
                 tier3_note = f" Escalation {why}; {review} flagged for manual review."
 
+        # ── Output routing: Reminders / daily Note / audit ──────────────────
+        routed = _route_classified(config)
+
         breakdown = ", ".join(f"{k}: {v}" for k, v in counts.items())
         return (
             f"Classified {classified}/{len(items)} queued item(s) via {provider}/{model}. "
-            f"{breakdown}. {len(candidates)} hard case(s) gated for Tier 3.{tier3_note}"
+            f"{breakdown}. {len(candidates)} hard case(s) gated for Tier 3.{tier3_note} "
+            f"Routed: {_format_routing(routed)}."
         )
 
     @tool
