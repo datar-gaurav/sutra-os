@@ -449,6 +449,31 @@ def evaluate_rules(sender: str, subject: str, config: dict) -> tuple[str, str]:
     return "keep", "default"
 
 
+# Free, non-LLM urgency signals (FR-8): explicit keywords + near-term deadlines.
+_URGENCY_RE = re.compile(
+    r"\b(asap|urgent|immediately|right away|today|tonight|"
+    r"this (?:morning|afternoon|evening)|end of day|eod|"
+    r"by \d{1,2}\s*(?:[:.]\d{2})?\s*(?:am|pm)|due (?:today|now)|deadline)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_urgent(sender: str, subject: str, body: str, config: dict) -> tuple[bool, str]:
+    """Decide if a just-arrived message warrants immediate handling (FR-8).
+
+    Signals: a priority sender (from the allowlist), or an explicit urgency
+    keyword / near-term deadline in the subject or body. Purely regex/keyword —
+    no LLM.
+    """
+    for entry in _parse_lines(config.get("sender_allowlist")):
+        if _sender_matches(sender, entry):
+            return True, f"priority-sender:{entry}"
+    match = _URGENCY_RE.search(f"{subject}\n{body}")
+    if match:
+        return True, f"keyword:{match.group(0).strip().lower()}"
+    return False, "not-urgent"
+
+
 # ─── Tier 0: new mail via host bridge ────────────────────────────────────────
 async def _bridge_get_new_mail(agent_id: str, after_rowid: int, limit: int) -> list[dict]:
     """Fetch new messages (ROWID > after_rowid) from the host bridge.
@@ -1010,11 +1035,6 @@ async def _scan_reminder_feedback(config: dict, agent_id: str) -> dict[str, int]
 
 # ─── Tools ───────────────────────────────────────────────────────────────────
 def create_tools(agent_id: str):
-    _STUB = (
-        "Smart Organizer is scaffolded (PR #1). This tool's tier logic lands "
-        "in a later PR; the plugin data store and config are wired up."
-    )
-
     @tool
     async def smart_organizer_ingest(limit: int = 50) -> str:
         """Tier 0 — read newly-arrived Apple Mail, apply the discard rules, and
@@ -1090,14 +1110,119 @@ def create_tools(agent_id: str):
         )
 
     @tool
-    async def smart_organizer_triage_urgent(message_ref: str) -> str:
+    async def smart_organizer_triage_urgent(
+        message_ref: str, sender: str = "", subject: str = "", body: str = ""
+    ) -> str:
         """Run the free urgency pre-check on a single just-arrived message and,
-        if urgent, classify it immediately (bypassing the batch queue).
+        if urgent, classify + route it immediately (bypassing the batch cycle).
+
+        Non-urgent messages are simply queued for the next batch cycle. The
+        urgent fast-path classifies with the Batch LLM Purpose and routes right
+        away; it deliberately skips Tier 3 escalation to stay fast.
 
         Args:
-            message_ref: Stable identifier of the message (from the Mail rule handler).
+            message_ref: Stable identifier of the message (RFC message id from
+                the Mail rule / arrival webhook).
+            sender: Sender address, if known (from the arrival payload).
+            subject: Subject, if known.
+            body: Body text, if known; otherwise fetched from the host bridge.
         """
-        return _STUB
+        config = await _get_config(agent_id)
+        if not body:
+            try:
+                body = await _bridge_get_body(agent_id, message_ref)
+            except ValueError:
+                body = ""
+
+        urgent, reason = _is_urgent(sender, subject, body, config)
+
+        # Non-urgent: ensure it's queued and let the batch cycle handle it.
+        if not urgent:
+            conn = _connect(config)
+            try:
+                conn.execute(
+                    "INSERT INTO queue (message_ref, sender, subject, body_snippet, urgency, state) "
+                    "VALUES (?, ?, ?, ?, 'normal', 'pending') "
+                    "ON CONFLICT(message_ref) DO NOTHING",
+                    (message_ref, sender, subject, subject),
+                )
+                conn.execute(
+                    "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+                    "VALUES (?, 'urgency', ?, NULL)",
+                    (message_ref, f"not-urgent:{reason}"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return f"'{message_ref}' is not urgent ({reason}); queued for the next batch cycle."
+
+        # Urgent: classify this single item now via the Batch LLM Purpose.
+        batch_purpose_id = (config.get("batch_purpose_id") or "").strip()
+        if not batch_purpose_id:
+            return "Message is urgent but no Batch LLM Purpose is configured; cannot classify."
+
+        conn = _connect(config)
+        try:
+            conn.execute(
+                "INSERT INTO queue (message_ref, sender, subject, body_snippet, urgency, state) "
+                "VALUES (?, ?, ?, ?, 'urgent', 'pending') "
+                "ON CONFLICT(message_ref) DO UPDATE SET urgency='urgent'",
+                (message_ref, sender, subject, subject),
+            )
+            conn.execute(
+                "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+                "VALUES (?, 'urgency', ?, NULL)",
+                (message_ref, f"urgent:{reason}"),
+            )
+            qid = conn.execute(
+                "SELECT id FROM queue WHERE message_ref=?", (message_ref,)
+            ).fetchone()["id"]
+            priors = _load_sender_priors(conn, [sender])
+            fb_candidates = _fetch_feedback_candidates(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+        items = [
+            {
+                "id": qid,
+                "message_ref": message_ref,
+                "sender": sender,
+                "subject": subject,
+                "body": body or subject,
+            }
+        ]
+        fewshot = await _rank_fewshot(fb_candidates, f"{sender} {subject}")
+        try:
+            provider, model, results = await _run_classifier(
+                batch_purpose_id, _SYSTEM_PROMPT, items, priors, fewshot
+            )
+        except Exception as e:  # noqa: BLE001
+            return f"Urgent ({reason}), but classification failed ({e}); item stays queued."
+        if not results:
+            return f"Urgent ({reason}), but the model returned no parseable classification; item stays queued."
+
+        res = next((r for r in results if r.get("id") == qid), results[0])
+        label = _normalize_label(res.get("label"))
+        confidence = _get_float(res.get("confidence"), 0.0)
+        conn = _connect(config)
+        try:
+            _upsert_classification(conn, message_ref, res, label, confidence, f"{provider}/{model}")
+            conn.execute("UPDATE queue SET state='classified' WHERE id=?", (qid,))
+            conn.execute(
+                "INSERT INTO decision_log (message_ref, tier, decision, confidence) "
+                "VALUES (?, 'tier1', ?, ?)",
+                (message_ref, label, confidence),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        routed = await _route_classified(config, agent_id)
+        return (
+            f"Urgent ({reason}) — classified as {label} (conf {confidence:.2f}) "
+            f"via {provider}/{model} and routed: {_format_routing(routed)}."
+        )
 
     @tool
     async def smart_organizer_run_batch(limit: int = 50) -> str:

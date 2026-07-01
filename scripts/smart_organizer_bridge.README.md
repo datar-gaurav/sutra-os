@@ -65,7 +65,10 @@ using terms from application "Mail"
         set bridgeToken to "PASTE_SMART_ORGANIZER_BRIDGE_TOKEN"
         repeat with m in theMessages
             set mid to message id of m
-            set payload to "{\"message_id\": \"" & mid & "\"}"
+            set snd to (extract address from (sender of m))
+            set subj to my jsonEscape(subject of m)
+            set payload to "{\"message_id\": \"" & mid & "\", \"sender\": \"" & snd & ¬
+                "\", \"subject\": \"" & subj & "\"}"
             do shell script "curl -s -X POST " & quoted form of bridgeURL & ¬
                 " -H 'Content-Type: application/json'" & ¬
                 " -H 'Authorization: Bearer " & bridgeToken & "'" & ¬
@@ -73,7 +76,27 @@ using terms from application "Mail"
         end repeat
     end perform mail action with messages theMessages
 end using terms from
+
+on jsonEscape(t)
+    set t to my replaceText(t, "\\", "\\\\")
+    set t to my replaceText(t, "\"", "\\\"")
+    return t
+end jsonEscape
+
+on replaceText(theText, oldStr, newStr)
+    set {tid, AppleScript's text item delimiters} to {AppleScript's text item delimiters, oldStr}
+    set parts to text items of theText
+    set AppleScript's text item delimiters to newStr
+    set theText to parts as text
+    set AppleScript's text item delimiters to tid
+    return theText
+end replaceText
 ```
+
+The bridge forwards this payload to `SMART_ORGANIZER_ARRIVAL_WEBHOOK` (point it
+at a Sutra endpoint that calls the organizer agent's `smart_organizer_triage_urgent`
+with `message_id`/`sender`/`subject`). Urgent messages are classified and routed
+immediately; non-urgent ones fall through to the next batch cycle.
 
 Save the script under `~/Library/Application Scripts/com.apple.mail/` so Mail can
 run it. When `SMART_ORGANIZER_ARRIVAL_WEBHOOK` is set in `backend/.env`, the
