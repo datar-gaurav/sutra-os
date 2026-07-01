@@ -14,7 +14,7 @@ priors, few-shot, the plugin SQLite store), while the macOS I/O is delegated to
 a host-side daemon — `scripts/smart_organizer_bridge.py` — over
 `http://host.docker.internal:PORT` with a shared bearer token, mirroring the
 `runtime_scripts` / `dispatcher_bridge.py` pattern. Configure:
-  - bridge_url   (config)      — e.g. http://host.docker.internal:7476
+  - bridge_url   (config)      — e.g. http://host.docker.internal:7477
   - bridge_token (credential)  — shared token, set by install.sh
 
 LLM configuration
@@ -83,7 +83,7 @@ EXTENSION_MANIFEST = {
             "key": "bridge_url",
             "label": "Host Bridge URL",
             "secret": False,
-            "placeholder": "http://host.docker.internal:7476",
+            "placeholder": "http://host.docker.internal:7477",
         },
         {
             "key": "batch_purpose_id",
@@ -293,7 +293,7 @@ async def _get_bridge(agent_id: str) -> tuple[str, str]:
     if not url:
         raise ValueError(
             "Smart Organizer integration is missing bridge_url. Set it in "
-            "Settings > Integrations (e.g. http://host.docker.internal:7476)."
+            "Settings > Integrations (e.g. http://host.docker.internal:7477)."
         )
     token = ""
     if row.credentials_enc:
@@ -491,6 +491,16 @@ def _meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (key, str(value)),
     )
+
+
+def _purge_old_logs(conn: sqlite3.Connection, retention_days: int) -> int:
+    """Delete decision-log rows older than the retention window (NFR-5)."""
+    days = max(1, int(retention_days))
+    cur = conn.execute(
+        "DELETE FROM decision_log WHERE timestamp < datetime('now', ?)",
+        (f"-{days} days",),
+    )
+    return cur.rowcount or 0
 
 
 # ─── Tier 1: classification & extraction ─────────────────────────────────────
@@ -1116,6 +1126,9 @@ def create_tools(agent_id: str):
 
         conn = _connect(config)
         try:
+            _purge_old_logs(
+                conn, _get_float(config.get("log_retention_days"), DEFAULT_LOG_RETENTION_DAYS)
+            )
             rows = [
                 dict(r)
                 for r in conn.execute(
@@ -1126,6 +1139,7 @@ def create_tools(agent_id: str):
             ]
             priors = _load_sender_priors(conn, [r["sender"] for r in rows])
             fb_candidates = _fetch_feedback_candidates(conn)
+            conn.commit()
         finally:
             conn.close()  # don't hold the store open across bridge/model calls
 
@@ -1492,7 +1506,7 @@ async def test_connection(creds: dict, config: dict) -> dict:
     token = creds.get("bridge_token") or ""
     if not bridge_url:
         ok = False
-        details.append("✗ Host Bridge URL is not set (e.g. http://host.docker.internal:7476).")
+        details.append("✗ Host Bridge URL is not set (e.g. http://host.docker.internal:7477).")
     else:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:

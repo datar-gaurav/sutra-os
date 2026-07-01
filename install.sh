@@ -191,6 +191,73 @@ fi
 
 echo ""
 
+# ── 4b-2. Smart Organizer bridge (macOS mail/reminders/notes) ─────
+
+info "Configuring Smart Organizer bridge..."
+echo "    A host daemon (launchd, 127.0.0.1:7477) that reads Apple Mail and"
+echo "    writes Reminders/Notes for the smart_organizer extension. The"
+echo "    Dockerized backend reaches it via http://host.docker.internal:7477."
+
+# Token (generate once, never rotate automatically)
+EXISTING_SO_TOKEN=$(grep "^SMART_ORGANIZER_BRIDGE_TOKEN=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+if [ -z "$EXISTING_SO_TOKEN" ]; then
+    SO_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))" 2>/dev/null || true)
+    if [ -n "$SO_TOKEN" ]; then
+        set_env "SMART_ORGANIZER_BRIDGE_TOKEN" "$SO_TOKEN"
+        ok "Generated SMART_ORGANIZER_BRIDGE_TOKEN"
+    else
+        warn "Could not generate SMART_ORGANIZER_BRIDGE_TOKEN — set it manually in backend/.env"
+    fi
+else
+    SO_TOKEN="$EXISTING_SO_TOKEN"
+    ok "SMART_ORGANIZER_BRIDGE_TOKEN already set — keeping existing value"
+fi
+
+# Port (default 7477, only write if absent)
+EXISTING_SO_PORT=$(grep "^SMART_ORGANIZER_BRIDGE_PORT=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+if [ -z "$EXISTING_SO_PORT" ]; then
+    set_env "SMART_ORGANIZER_BRIDGE_PORT" "7477"
+    ok "Set SMART_ORGANIZER_BRIDGE_PORT=7477"
+else
+    ok "SMART_ORGANIZER_BRIDGE_PORT already set to ${EXISTING_SO_PORT}"
+fi
+
+# Render + optionally load the launchd agent
+read -rp "$(echo -e ${BOLD}Enable the Smart Organizer bridge on this host?${RESET}) [y/N] " enable_so
+if [[ "$enable_so" =~ ^[Yy]$ ]]; then
+    mkdir -p "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
+    SO_PLIST_TEMPLATE="$PROJECT_DIR/scripts/com.sutra.smart-organizer-bridge.plist"
+    SO_PLIST_DEST="$HOME/Library/LaunchAgents/com.sutra.smart-organizer-bridge.plist"
+    if [ ! -f "$SO_PLIST_TEMPLATE" ]; then
+        warn "plist template missing at $SO_PLIST_TEMPLATE — skipping launchd setup."
+    else
+        sed \
+            -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
+            -e "s|__HOME__|$HOME|g" \
+            -e "s|__SMART_ORGANIZER_BRIDGE_TOKEN__|${SO_TOKEN:-CHANGE_ME}|g" \
+            "$SO_PLIST_TEMPLATE" > "$SO_PLIST_DEST"
+        chmod 600 "$SO_PLIST_DEST"   # contains the bridge token
+        ok "Wrote $SO_PLIST_DEST"
+        echo "    NOTE: first run will prompt for Automation access to Mail,"
+        echo "    Reminders, and Notes — approve it in System Settings > Privacy."
+        read -rp "$(echo -e ${BOLD}Load the launchd agent now?${RESET}) [y/N] " so_load_now
+        if [[ "$so_load_now" =~ ^[Yy]$ ]]; then
+            launchctl unload "$SO_PLIST_DEST" 2>/dev/null || true
+            if launchctl load "$SO_PLIST_DEST"; then
+                ok "Loaded com.sutra.smart-organizer-bridge (daemon on 127.0.0.1:7477)"
+            else
+                warn "launchctl load failed — load manually: launchctl load $SO_PLIST_DEST"
+            fi
+        else
+            info "Load later with: launchctl load $SO_PLIST_DEST"
+        fi
+    fi
+else
+    info "Skipped Smart Organizer bridge — re-run ./install.sh to enable later."
+fi
+
+echo ""
+
 # ── 4c. Sutra Fleet (cross-repo automation) ─────
 
 info "Configuring Sutra Fleet (Gemini-CLI host worker)..."
