@@ -69,3 +69,7 @@ security_audit.md
 # Rendered launchd agents — machine-specific paths + secrets (tokens).
 # Templates live in scripts/*.plist; start.sh/stop.sh load these by full path.
 scripts/launchd/
+
+# Host-run backend helpers — machine-specific paths + alternate DB/Redis ports.
+backend/run-host.sh
+docker-compose.hostports.yml
