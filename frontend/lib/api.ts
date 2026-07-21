@@ -3138,3 +3138,82 @@ export const purposesApi = {
     status: (id: string) =>
         apiFetch<PurposeStatusResponse>(`/api/purposes/${id}/status`),
 };
+
+// ─── Smart Organizer ──────────────────────────────────────────────────────────
+
+export interface SmartOrganizerOverview {
+    queue: Record<string, number>;
+    labels: Record<string, number>;
+    needs_review: number;
+    sender_priors: number;
+    corrections: number;
+    fewshot_examples: number;
+}
+
+export interface SmartOrganizerQueueItem {
+    id: number;
+    message_ref: string;
+    sender: string;
+    subject: string;
+    received_at: string | null;
+    urgency: string | null;
+    state: string;
+    label: string | null;
+    summary: string | null;
+    due_date: string | null;
+    confidence: number | null;
+    escalated: number | null;
+    needs_review: number | null;
+}
+
+export interface SmartOrganizerDigest {
+    date: string;
+    actionable: { label: string; summary: string; due_date: string | null; sender: string; subject: string }[];
+    fyi: { label: string; summary: string; due_date: string | null; sender: string; subject: string }[];
+}
+
+export interface SmartOrganizerPrior {
+    sender: string;
+    score: number;
+    sample_count: number;
+    updated_at: string;
+}
+
+export interface SmartOrganizerFeedback {
+    id: number;
+    sender: string;
+    subject: string;
+    model_label: string | null;
+    user_label: string;
+    timestamp: string;
+}
+
+export interface SmartOrganizerAuditEntry {
+    id: number;
+    message_ref: string;
+    tier: string;
+    decision: string;
+    confidence: number | null;
+    timestamp: string;
+}
+
+export const smartOrganizerApi = {
+    overview: () => apiFetch<SmartOrganizerOverview>("/api/smart-organizer/overview"),
+    queue: (state?: string, limit = 200) =>
+        apiFetch<SmartOrganizerQueueItem[]>(
+            `/api/smart-organizer/queue?limit=${limit}${state ? `&state=${state}` : ""}`
+        ),
+    digest: (on?: string) =>
+        apiFetch<SmartOrganizerDigest>(`/api/smart-organizer/digest${on ? `?on=${on}` : ""}`),
+    needsReview: (limit = 200) =>
+        apiFetch<SmartOrganizerQueueItem[]>(`/api/smart-organizer/needs-review?limit=${limit}`),
+    priors: (limit = 200) =>
+        apiFetch<SmartOrganizerPrior[]>(`/api/smart-organizer/priors?limit=${limit}`),
+    feedback: (limit = 100) =>
+        apiFetch<SmartOrganizerFeedback[]>(`/api/smart-organizer/feedback?limit=${limit}`),
+    audit: (tier?: string, limit = 200) =>
+        apiFetch<SmartOrganizerAuditEntry[]>(
+            `/api/smart-organizer/audit?limit=${limit}${tier ? `&tier=${tier}` : ""}`
+        ),
+    csvUrl: () => `${API_BASE}/api/smart-organizer/queue.csv`,
+};

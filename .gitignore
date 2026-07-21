@@ -65,3 +65,7 @@ build/
 # Internal docs and audits (not for public repo)
 docs/
 security_audit.md
+
+# Rendered launchd agents — machine-specific paths + secrets (tokens).
+# Templates live in scripts/*.plist; start.sh/stop.sh load these by full path.
+scripts/launchd/

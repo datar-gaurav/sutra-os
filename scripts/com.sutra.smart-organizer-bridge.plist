@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sutra Smart Organizer — host bridge launchd agent.
+
+  This is a TEMPLATE. install.sh renders it into ~/Library/LaunchAgents/
+  with real values substituted for the __VAR__ markers. Do not load this
+  file directly — load the rendered copy.
+
+  After install:
+    launchctl list | grep sutra                          # verify
+    tail -f ~/Library/Logs/sutra-smart-organizer.log     # watch
+
+  Re-render after changing token/port: re-run ./install.sh
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sutra.smart-organizer-bridge</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>__PROJECT_DIR__/scripts/smart_organizer_bridge.py</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SMART_ORGANIZER_BRIDGE_TOKEN</key>
+    <string>__SMART_ORGANIZER_BRIDGE_TOKEN__</string>
+
+    <key>SMART_ORGANIZER_BRIDGE_PORT</key>
+    <string>7477</string>
+
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/sutra-smart-organizer.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/sutra-smart-organizer.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>Nice</key>
+  <integer>5</integer>
+</dict>
+</plist>
