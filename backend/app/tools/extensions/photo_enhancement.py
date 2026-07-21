@@ -85,7 +85,7 @@ EXTENSION_MANIFEST = {
         },
         {
             "key": "device",
-            "label": "Inference device (cpu or mps)",
+            "label": "Inference device ('cpu' to force CPU, else auto/MPS)",
             "secret": False,
             "placeholder": "cpu",
         },
@@ -160,6 +160,13 @@ def _resolve_config_paths(config: dict, input_dir: str = "", output_dir: str = "
     }
 
 
+# Bootstrap that hides MPS before CodeFormer's get_device() runs, forcing CPU.
+_FORCE_CPU_BOOTSTRAP = (
+    "import torch; torch.backends.mps.is_available = lambda: False; "
+    "import runpy; runpy.run_path('inference_codeformer.py', run_name='__main__')"
+)
+
+
 def _build_command(
     python_bin: str,
     input_dir: str,
@@ -169,10 +176,19 @@ def _build_command(
     bg_upsample: bool,
     face_upsample: bool,
 ) -> list[str]:
-    """Build the ``inference_codeformer.py`` argv (run with cwd=codeformer_dir)."""
-    args = [
-        python_bin,
-        SCRIPT_NAME,
+    """Build the ``inference_codeformer.py`` argv (run with cwd=codeformer_dir).
+
+    ``inference_codeformer.py`` has no ``--device`` flag — ``get_device()``
+    auto-selects MPS on Apple Silicon. There is no CLI/env switch to force CPU,
+    so ``device='cpu'`` launches via a small ``-c`` bootstrap that hides MPS
+    before the script runs; any other value uses auto-detect (MPS, with the
+    op fallback set in ``_subprocess_env``).
+    """
+    if device.strip().lower() == "cpu":
+        launcher = [python_bin, "-c", _FORCE_CPU_BOOTSTRAP]
+    else:
+        launcher = [python_bin, SCRIPT_NAME]
+    args = launcher + [
         "-w",
         str(w),
         "--input_path",
@@ -184,9 +200,18 @@ def _build_command(
         args += ["--bg_upsampler", "realesrgan"]
     if face_upsample:
         args.append("--face_upsample")
-    if device:
-        args += ["--device", device]
     return args
+
+
+def _subprocess_env() -> dict:
+    """Environment for the CodeFormer subprocess.
+
+    Enables PyTorch's MPS→CPU op fallback so ops unimplemented on Apple Silicon
+    Metal degrade gracefully instead of crashing the batch.
+    """
+    env = dict(os.environ)
+    env["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+    return env
 
 
 def _count_results(output_dir: str) -> int:
@@ -294,6 +319,7 @@ def create_tools(agent_id: str):
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 cwd=p["codeformer_dir"],
+                env=_subprocess_env(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

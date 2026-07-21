@@ -13,9 +13,10 @@ from app.tools.extensions import photo_enhancement as pe
 # ─── Pure helpers ────────────────────────────────────────────────────────────
 
 
-def test_build_command_all_flags():
+def test_build_command_auto_device_runs_script_directly():
+    # Any non-"cpu" device auto-detects (MPS); the script runs directly.
     args = pe._build_command(
-        "/venv/python", "/in", "/out", 0.7, "cpu", bg_upsample=True, face_upsample=True
+        "/venv/python", "/in", "/out", 0.7, "mps", bg_upsample=True, face_upsample=True
     )
     assert args[:8] == [
         "/venv/python",
@@ -29,7 +30,24 @@ def test_build_command_all_flags():
     ]
     assert "--bg_upsampler" in args and args[args.index("--bg_upsampler") + 1] == "realesrgan"
     assert "--face_upsample" in args
-    assert args[args.index("--device") + 1] == "cpu"
+    # inference_codeformer.py has no --device flag; we must never pass one.
+    assert "--device" not in args
+
+
+def test_build_command_cpu_uses_bootstrap_launcher():
+    # device="cpu" launches via the -c bootstrap that hides MPS, not the script.
+    args = pe._build_command(
+        "/venv/python", "/in", "/out", 0.7, "CPU", bg_upsample=True, face_upsample=True
+    )
+    assert args[0] == "/venv/python"
+    assert args[1] == "-c"
+    assert "is_available = lambda: False" in args[2]
+    assert "inference_codeformer.py" in args[2]
+    assert pe.SCRIPT_NAME not in args  # not passed as a bare argv item
+    assert "--device" not in args
+    # Real flags still follow the bootstrap.
+    assert args[3:5] == ["-w", "0.7"]
+    assert "--input_path" in args and "--face_upsample" in args
 
 
 def test_build_command_omits_optional_flags():
@@ -38,8 +56,13 @@ def test_build_command_omits_optional_flags():
     )
     assert "--bg_upsampler" not in args
     assert "--face_upsample" not in args
-    assert "--device" not in args  # empty device is not passed
+    assert "--device" not in args  # never passed
     assert args[args.index("-w") + 1] == "0.5"
+
+
+def test_subprocess_env_enables_mps_fallback():
+    env = pe._subprocess_env()
+    assert env["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
 
 
 def test_resolve_config_paths_override_wins():
@@ -140,7 +163,7 @@ async def _make_env(tmp_path, with_input=True):
         "codeformer_dir": str(cf),
         "input_dir": str(inp),
         "output_dir": str(out),
-        "device": "cpu",
+        "device": "mps",  # auto path: script runs directly (cpu path covered in unit tests)
     }
 
 
@@ -161,6 +184,7 @@ async def test_photo_enhance_runs_and_reports(tmp_path):
     async def fake_exec(*args, **kwargs):
         captured["args"] = list(args)
         captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
         # Simulate CodeFormer writing one final result into the dated output.
         out_path = args[args.index("--output_path") + 1]
         os.makedirs(os.path.join(out_path, "final_results"), exist_ok=True)
@@ -175,9 +199,11 @@ async def test_photo_enhance_runs_and_reports(tmp_path):
             {"w": 0.55, "bg_upsample": True, "face_upsample": False}
         )
 
-    # Command was built correctly and run in the CodeFormer dir.
+    # Command was built correctly and run in the CodeFormer dir with MPS fallback.
     assert captured["cwd"] == config["codeformer_dir"]
     assert captured["args"][:4] == [config["python_bin"], pe.SCRIPT_NAME, "-w", "0.55"]
+    assert captured["env"]["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
+    assert "--device" not in captured["args"]
     assert "--bg_upsampler" in captured["args"]
     assert "--face_upsample" not in captured["args"]
     # Output went into a dated subfolder under output_dir, not output_dir itself.
