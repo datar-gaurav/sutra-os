@@ -517,7 +517,7 @@ function SubAgentForm({
                 {source && (
                     <div className="flex items-center gap-2 mt-1 text-xs">
                         <span className="text-gray-500">
-                            Snapshot: v{cfg.source_version} of "{source.name}"
+                            Snapshot: v{cfg.source_version} of &quot;{source.name}&quot;
                         </span>
                         {driftDetected && (
                             <button
@@ -571,7 +571,7 @@ function SubAgentForm({
                 </div>
             </div>
             <div className="text-xs text-gray-500 italic">
-                The source agent's final assistant message must be JSON of shape{" "}
+                The source agent&apos;s final assistant message must be JSON of shape{" "}
                 <code>{`{verdict: "PASS"|"FAIL", reason, confidence}`}</code>.
             </div>
         </div>
