@@ -73,3 +73,14 @@ scripts/launchd/
 # Host-run backend helpers — machine-specific paths + alternate DB/Redis ports.
 backend/run-host.sh
 docker-compose.hostports.yml
+
+# Personal notes and prep material (not for public repo)
+/Sutra_Cheat_Sheet.md
+/Sutra_Interview_Defense_Brief.md
+/Sutra_Code_Map.xlsx
+
+# Local scratch: PR drafts, smoke scripts, share dumps
+backend/.local/
+
+# Design handoff drafts
+/design_handoff_social_pulse/
