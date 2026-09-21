@@ -235,7 +235,7 @@ function PickerModal({
                         ) : saved.length === 0 ? (
                             <div className="text-sm text-gray-500 italic">
                                 No saved guardrails yet. Configure a guardrail and click
-                                "Save to library" to start the collection.
+                                &quot;Save to library&quot; to start the collection.
                             </div>
                         ) : (
                             saved.map((sg) => (

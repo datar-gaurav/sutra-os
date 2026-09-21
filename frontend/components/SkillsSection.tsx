@@ -15,7 +15,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
     Github, Search, Sparkles, Bot, TrendingUp,
 };
 
-function SkillIcon({ icon, color }: { icon: string | null; color: string | null }) {
+function SkillIcon({ icon, color }: { icon?: string | null; color?: string | null }) {
     const Icon = (icon && ICON_MAP[icon]) ? ICON_MAP[icon] : Sparkles;
     return (
         <div

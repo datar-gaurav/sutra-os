@@ -266,7 +266,7 @@ function SuiteDetail({ suiteId }: { suiteId: string }) {
                 </div>
                 {cases.length === 0 ? (
                     <div className="text-sm text-gray-400 italic">
-                        No cases. Add manually or hit "Generate synthetic".
+                        No cases. Add manually or hit &quot;Generate synthetic&quot;.
                     </div>
                 ) : (
                     <div className="space-y-1.5">

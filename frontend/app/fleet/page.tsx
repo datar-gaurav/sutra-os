@@ -97,7 +97,7 @@ function SetupHelp({ health }: { health: FleetWorkerHealth | null }) {
                             <CodeBlock>{`ls ${home}/.gemini/oauth_creds.json`}</CodeBlock>
                         </li>
                         <li>
-                            <span className="text-stone-500">(Optional, only if you also use a personal Gemini API key in <span className="font-mono">~/.env</span>):</span> the worker passes a scrubbed env to Gemini, so stray <span className="font-mono">GEMINI_API_KEY</span> / <span className="font-mono">GOOGLE_GENAI_USE_*</span> in your shell rc won't leak in — but if Gemini auto-loads a <span className="font-mono">.env</span> walking up from the workspace, it can. Keep <span className="font-mono">~/.env</span> clean of those vars.
+                            <span className="text-stone-500">(Optional, only if you also use a personal Gemini API key in <span className="font-mono">~/.env</span>):</span> the worker passes a scrubbed env to Gemini, so stray <span className="font-mono">GEMINI_API_KEY</span> / <span className="font-mono">GOOGLE_GENAI_USE_*</span> in your shell rc won&apos;t leak in — but if Gemini auto-loads a <span className="font-mono">.env</span> walking up from the workspace, it can. Keep <span className="font-mono">~/.env</span> clean of those vars.
                         </li>
                     </ol>
                     <p className="text-xs text-stone-500">
