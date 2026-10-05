@@ -73,7 +73,9 @@ export default function ComposedAgentDetailPage() {
 
     function addLLMNode() {
         if (!spec) return;
-        const i = spec.nodes.filter((n) => n.kind === "llm").length + 1;
+        const existingIds = new Set(spec.nodes.map((n) => n.id));
+        let i = spec.nodes.filter((n) => n.kind === "llm").length + 1;
+        while (existingIds.has(`llm_${i}`)) i++;
         const newId = `llm_${i}`;
         const newNode: ComposedAgentNode = {
             id: newId,
