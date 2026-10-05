@@ -84,5 +84,5 @@ for p in "${valid_mounts[@]}"; do
     echo "  + $p"
 done
 for s in "${skipped[@]:-}"; do
-    [ -n "$s" ] && echo "  ! skipped: $s"
+    if [ -n "$s" ]; then echo "  ! skipped: $s"; fi
 done
