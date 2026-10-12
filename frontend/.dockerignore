@@ -1,0 +1,15 @@
+# Never copy host-installed deps over the image's `npm ci` result.
+node_modules
+
+# Build output and caches — regenerated inside the container.
+.next
+out
+.turbo
+
+# Local env files; compose supplies these at runtime.
+.env
+.env.*.local
+
+.git
+.DS_Store
+*.log
