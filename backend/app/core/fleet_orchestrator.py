@@ -12,9 +12,9 @@ The host worker is the only thing that touches Gemini CLI itself.
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -238,15 +238,22 @@ async def triage_and_enqueue(db: AsyncSession) -> FleetJob | None:
 # ─── Claim (host worker → /api/fleet/claim) ───────────────────────────────────
 
 
-async def claim_next_job(db: AsyncSession, worker_id: str) -> FleetJob | None:
-    """Atomically claim the oldest queued job. Returns None if queue empty.
+async def claim_next_job(
+    db: AsyncSession, worker_id: str, runners: list[str] | None = None
+) -> FleetJob | None:
+    """Atomically claim the oldest queued job this worker can run.
+
+    ``runners`` is what the worker announced it supports; a worker that
+    announces nothing (older versions) only gets "gemini" jobs.
 
     Uses SELECT ... FOR UPDATE SKIP LOCKED so multiple workers (even though
     fleet_max_concurrent caps at 1 by default) cannot grab the same row.
     """
+    runners = runners or ["gemini"]
     stmt = (
         select(FleetJob)
         .where(FleetJob.status == FleetStatus.queued.value)
+        .where(FleetJob.runner.in_(runners))
         .order_by(FleetJob.created_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -296,15 +303,37 @@ async def record_decision(db: AsyncSession, job_id: str, decision: str, detail: 
     await db.commit()
 
 
+_TERMINAL = {FleetStatus.pr_created.value, FleetStatus.completed.value,
+             FleetStatus.failed.value, FleetStatus.cancelled.value}
+
+# Fleet status → ForgeRequest status, for jobs queued by Forge's CodeExecutor.
+_FORGE_STATUS = {
+    FleetStatus.queued.value: "coding",
+    FleetStatus.claimed.value: "coding",
+    FleetStatus.running.value: "coding",
+    FleetStatus.pushing.value: "testing",
+    FleetStatus.pr_created.value: "pr_created",
+    FleetStatus.completed.value: "completed",
+    FleetStatus.failed.value: "failed",
+    FleetStatus.cancelled.value: "cancelled",
+}
+
+
 async def update_status(
     db: AsyncSession, job_id: str, status: str,
     error: str | None = None, pr_url: str | None = None, pr_number: int | None = None,
+    external_ref: str | None = None, note: str | None = None,
 ) -> None:
     if status not in {s.value for s in FleetStatus}:
         raise ValueError(f"invalid fleet status: {status}")
     job = await db.get(FleetJob, job_id)
     if not job:
         return
+    # A cancel from Sutra wins over a late worker update, except the worker
+    # confirming the runner's own outcome after it cancelled there.
+    if job.status == FleetStatus.cancelled.value and status not in _TERMINAL:
+        status = job.status
+    changed = job.status != status
     job.status = status
     if error is not None:
         job.error_log = error
@@ -312,6 +341,61 @@ async def update_status(
         job.pr_url = pr_url
     if pr_number is not None:
         job.pr_number = pr_number
+    if external_ref is not None and not job.external_ref:
+        job.external_ref = external_ref
+    if job.forge_request_id:
+        await _mirror_to_forge(db, job, changed=changed, note=note)
     await db.commit()
+
+
+async def _mirror_to_forge(db: AsyncSession, job: FleetJob, *, changed: bool, note: str | None) -> None:
+    """Reflect a Forge-owned fleet job's progress onto its ForgeRequest."""
+    from app.core.code_executor import append_log, broadcast_forge
+    from app.models.forge import ForgeRequest
+
+    req = await db.get(ForgeRequest, job.forge_request_id)
+    if not req or req.status == "cancelled":
+        return
+    new_status = _FORGE_STATUS.get(job.status, req.status)
+    if job.pr_url and req.pr_url != job.pr_url:
+        req.pr_url = job.pr_url
+        append_log(req, "log", f"Draft PR: {job.pr_url}")
+    if job.pr_number:
+        req.pr_number = job.pr_number
+    if job.status == FleetStatus.failed.value and job.error_log:
+        req.error_log = job.error_log
+    if note:
+        append_log(req, "log", note)
+    elif changed:
+        append_log(req, "log", f"{job.runner}: {job.status}")
+    if req.status != new_status or changed or note:
+        req.status = new_status
+        broadcast_forge(req.id, new_status)
+
+
+async def jobs_to_sync(db: AsyncSession, worker_id: str, runner: str) -> list[FleetJob]:
+    """Jobs a worker must keep in step with its runner.
+
+    Active jobs it claimed that have a runner-side id, plus ones Sutra
+    cancelled, so the worker can cancel them on the runner too.
+    """
+    stmt = (
+        select(FleetJob)
+        .where(FleetJob.runner == runner)
+        .where(FleetJob.claimed_by == worker_id)
+        .where(FleetJob.external_ref.is_not(None))
+        .where(or_(
+            FleetJob.status.in_([
+                FleetStatus.claimed.value, FleetStatus.running.value, FleetStatus.pushing.value,
+            ]),
+            and_(
+                FleetJob.status == FleetStatus.cancelled.value,
+                FleetJob.updated_at > datetime.now(timezone.utc) - timedelta(days=1),
+            ),
+        ))
+        .order_by(FleetJob.updated_at.desc())
+        .limit(200)
+    )
+    return list((await db.execute(stmt)).scalars().all())
 
 

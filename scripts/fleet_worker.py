@@ -33,6 +33,11 @@ Required env (set in launchd plist or shell rc):
   GEMINI_HOME               e.g. ~/.gemini-fleet-home
 
 Optional:
+  SHAKHA_BIN                path to the `shakha` command; turns on the Shakha
+                            runner (Forge's CODE_EXECUTOR=shakha). With it set,
+                            GEMINI_HOME and GITHUB_TOKEN are only needed for
+                            the Gemini runner.
+  SHAKHA_SYNC_SECONDS       default: 60 (how often Shakha tasks are synced)
   FLEET_WORKER_PORT         default: 7476
   FLEET_GEMINI_MODEL        default: gemini-2.5-pro
   FLEET_RUN_TIMEOUT_SEC     default: 1800
@@ -57,7 +62,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -92,9 +97,18 @@ def _need(name: str) -> str:
 SUTRA_URL = _need("SUTRA_URL").rstrip("/")
 WORKER_TOKEN = _need("FLEET_WORKER_TOKEN")
 WORKER_ID = _need("FLEET_WORKER_ID")
-GITHUB_TOKEN = _need("GITHUB_TOKEN")
 WORKSPACE_ROOT = Path(os.path.expanduser(_need("FLEET_WORKSPACE_ROOT")))
-GEMINI_HOME = Path(os.path.expanduser(_need("GEMINI_HOME")))
+
+# Runners this worker can execute; announced on every claim so Sutra never
+# hands it a job it can't run. Shakha is opt-in via SHAKHA_BIN.
+SHAKHA_BIN = os.path.expanduser(os.environ.get("SHAKHA_BIN", "").strip())
+SHAKHA_SYNC_SECONDS = int(os.environ.get("SHAKHA_SYNC_SECONDS", "60"))
+_GEMINI_HOME_RAW = os.environ.get("GEMINI_HOME", "").strip()
+if not SHAKHA_BIN and not _GEMINI_HOME_RAW:
+    _need("GEMINI_HOME")  # exits with the usual message
+RUNNERS = (["gemini"] if _GEMINI_HOME_RAW else []) + (["shakha"] if SHAKHA_BIN else [])
+GITHUB_TOKEN = _need("GITHUB_TOKEN") if "gemini" in RUNNERS else os.environ.get("GITHUB_TOKEN", "")
+GEMINI_HOME = Path(os.path.expanduser(_GEMINI_HOME_RAW)) if _GEMINI_HOME_RAW else None
 GEMINI_MODEL = os.environ.get("FLEET_GEMINI_MODEL", "gemini-2.5-pro")
 WORKER_PORT = int(os.environ.get("FLEET_WORKER_PORT", "7476"))
 
@@ -122,7 +136,7 @@ def _api(method: str, path: str, body: dict | None = None) -> dict | None:
 
 
 def claim_job() -> dict | None:
-    return _api("POST", "/claim")
+    return _api("POST", "/claim", {"runners": RUNNERS})
 
 
 def push_logs(job_id: str, lines: list[dict]) -> None:
@@ -405,6 +419,9 @@ def _run_one_job_inner() -> int:
         sys.stderr.write("[fleet] queue empty.\n")
         return 0
 
+    if job.get("runner", "gemini") == "shakha":
+        return start_shakha_job(job)
+
     job_id = job["id"]
     repo = job["repo_url"]
     branch = job["branch_name"] or f"fleet/{job_id[:8]}"
@@ -462,7 +479,7 @@ def _run_one_job_inner() -> int:
         return 0
 
     except Exception as e:
-        msg = str(e).replace(GITHUB_TOKEN, "<REDACTED>")
+        msg = str(e).replace(GITHUB_TOKEN, "<REDACTED>") if GITHUB_TOKEN else str(e)
         push_status(job_id, "failed", error=msg[:4000])
         sys.stderr.write(f"[fleet] {job_id} failed: {msg}\n")
         return 1
@@ -471,6 +488,160 @@ def _run_one_job_inner() -> int:
             shutil.rmtree(workspace, ignore_errors=True)
         except Exception:
             pass
+
+
+# ─── Shakha runner ───────────────────────────────────────────────────────────
+#
+# Forge's CODE_EXECUTOR=shakha queues jobs with runner="shakha". This worker
+# hands each one to Shakha through the `shakha` command (which talks to
+# shakhad over its local socket) and returns at once: Shakha plans, waits for
+# your approval, runs checks and review, and opens the draft PR on its own
+# schedule. A background loop then keeps Sutra in step with each task.
+
+_SHAKHA_TERMINAL = {"completed", "cancelled", "failed"}
+_SHAKHA_DELIVERY_PENDING = {"waiting_for_gate", "waiting_for_acceptance", "publishing", "unknown"}
+_shakha_seen: dict[str, tuple] = {}  # job id → last reported state, to report changes only
+
+
+def _shakha(args: list[str], timeout: int = 60) -> dict:
+    """Run `shakha …` and parse its JSON output. Raises on failure."""
+    p = subprocess.run([SHAKHA_BIN, *args], capture_output=True, text=True, timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError(f"shakha {args[0]} {args[1] if len(args) > 1 else ''}: "
+                           f"{(p.stderr or p.stdout).strip()[:500]}")
+    return json.loads(p.stdout or "{}")
+
+
+def shakha_ready() -> bool:
+    try:
+        _shakha(["status"], timeout=10)
+        return True
+    except Exception:
+        return False
+
+
+def normalize_repo(url: str) -> str:
+    """'git@github.com:Owner/Repo.git' / 'https://github.com/owner/repo' → 'owner/repo'."""
+    url = url.strip().rstrip("/")
+    url = re.sub(r"\.git$", "", url)
+    m = re.search(r"[:/]([^/:]+/[^/:]+)$", url)
+    return (m.group(1) if m else url).lower()
+
+
+def resolve_shakha_repo(repo_url: str) -> str:
+    """Find the local checkout Shakha knows for 'owner/repo' by its git remotes."""
+    wanted = normalize_repo(repo_url)
+    for repo in _shakha(["repo", "list"]).get("repos", []):
+        if not repo.get("exists"):
+            continue
+        try:
+            remotes = _run(["git", "-C", repo["path"], "remote", "-v"], check=False)
+        except Exception:
+            continue
+        for line in remotes.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and normalize_repo(parts[1]) == wanted:
+                return repo["path"]
+    raise RuntimeError(
+        f"Shakha has no repository for {repo_url}. Add your checkout with "
+        f"`shakha repo add /path/to/repo`, then retry the Forge request."
+    )
+
+
+def start_shakha_job(job: dict) -> int:
+    job_id = job["id"]
+    try:
+        push_status(job_id, "running", note="Fleet worker picked it up; creating the Shakha task")
+        repo_path = resolve_shakha_repo(job["repo_url"])
+        # The fleet job id is the idempotency key, so a retry after a crash
+        # returns the same Shakha task instead of creating a second one.
+        created = _shakha([
+            "task", "create", "--repo", repo_path, "--title", job["title"][:200],
+            "--prompt", job["prompt"], "--agent", "auto", "--key", f"sutra-fleet-{job_id}",
+        ])
+        task_id = created["taskId"]
+        push_status(job_id, "running", external_ref=task_id,
+                    note=f"Shakha task {task_id} created in {repo_path}")
+        return 0
+    except Exception as e:
+        push_status(job_id, "failed", error=str(e)[:4000])
+        sys.stderr.write(f"[fleet] shakha job {job_id} failed to start: {e}\n")
+        return 1
+
+
+def shakha_report(task: dict) -> dict:
+    """Map a Shakha taskView to a fleet status update."""
+    execution = task.get("execution", "")
+    detail = task.get("deliveryDetail") or {}
+    url = detail.get("url")
+    attention = sorted({a.get("type", "") for a in task.get("attentionReasons") or []})
+    update: dict = {}
+    if url:
+        update["pr_url"] = url
+        m = re.search(r"/pull/(\d+)", url)
+        if m:
+            update["pr_number"] = int(m.group(1))
+
+    if execution == "completed":
+        if url:
+            update["status"] = "pr_created"
+        elif detail.get("status") in _SHAKHA_DELIVERY_PENDING:
+            update["status"] = "running"
+            update["note"] = f"Shakha: finished, delivery {detail.get('status')}"
+        else:
+            update["status"] = "completed"
+    elif execution == "failed":
+        update["status"] = "failed"
+        reasons = (task.get("gate") or {}).get("reasons") or []
+        update["error"] = (detail.get("error") or "; ".join(reasons) or "Shakha task failed")[:4000]
+    elif execution == "cancelled":
+        update["status"] = "cancelled"
+    else:
+        update["status"] = "running"
+        if execution == "awaiting_approval" or "action_required" in {
+            a.get("level") for a in task.get("attentionReasons") or []
+        }:
+            update["note"] = (f"Shakha: {execution}" + (f" ({', '.join(attention)})" if attention else "")
+                              + " — answer in Shakha or Powerdial")
+        else:
+            update["note"] = f"Shakha: {execution}"
+    update["_key"] = (execution, detail.get("state"), detail.get("status"), url, tuple(attention))
+    return update
+
+
+def shakha_sync_once() -> None:
+    jobs = _api("GET", "/worker/sync?runner=shakha") or []
+    for job in jobs:
+        job_id, task_id = job["id"], job.get("external_ref")
+        if not task_id:
+            continue
+        try:
+            task = _shakha(["task", "get", task_id])
+            if job["status"] == "cancelled":
+                if task.get("execution") not in _SHAKHA_TERMINAL:
+                    _shakha(["task", "cancel", task_id, "--key", f"sutra-cancel-{job_id}"])
+                    push_logs(job_id, [{"timestamp": datetime.now(timezone.utc).isoformat(),
+                                        "stream": "event", "line": f"[fleet] cancelled Shakha task {task_id}"}])
+                continue
+            update = shakha_report(task)
+            key = update.pop("_key")
+            if _shakha_seen.get(job_id) == key:
+                continue
+            _shakha_seen[job_id] = key
+            push_status(job_id, **update)
+            if update["status"] in ("pr_created", "completed", "failed", "cancelled"):
+                _shakha_seen.pop(job_id, None)
+        except Exception as e:
+            sys.stderr.write(f"[fleet] shakha sync {job_id}: {e}\n")
+
+
+def shakha_sync_loop() -> None:
+    while True:
+        try:
+            shakha_sync_once()
+        except Exception as e:
+            sys.stderr.write(f"[fleet] shakha sync loop: {e}\n")
+        time.sleep(SHAKHA_SYNC_SECONDS)
 
 
 # ─── HTTP server ─────────────────────────────────────────────────────────────
@@ -508,14 +679,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/health":
             with _busy_lock:
                 busy_now = _busy
-            auth_ready = (GEMINI_HOME / ".gemini" / "oauth_creds.json").exists()
+            auth_ready = bool(GEMINI_HOME) and (GEMINI_HOME / ".gemini" / "oauth_creds.json").exists()
             self._json(200, {
                 "ok": True,
                 "busy": busy_now,
                 "version": VERSION,
                 "worker_id": WORKER_ID,
+                "runners": RUNNERS,
                 "auth_ready": auth_ready,
-                "gemini_home": str(GEMINI_HOME),
+                "gemini_home": str(GEMINI_HOME) if GEMINI_HOME else None,
+                "shakha_ready": shakha_ready() if SHAKHA_BIN else None,
             })
             return
         self._json(404, {"error": "not found"})
@@ -551,7 +724,9 @@ class _ReuseAddrServer(socketserver.TCPServer):
 def main() -> int:
     lock = acquire_daemon_lock()
     WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
-    sys.stderr.write(f"[fleet] daemon up, listening on 127.0.0.1:{WORKER_PORT} (worker_id={WORKER_ID})\n")
+    sys.stderr.write(f"[fleet] daemon up, listening on 127.0.0.1:{WORKER_PORT} (worker_id={WORKER_ID}, runners={RUNNERS})\n")
+    if "shakha" in RUNNERS:
+        threading.Thread(target=shakha_sync_loop, name="shakha-sync", daemon=True).start()
     server = _ReuseAddrServer(("127.0.0.1", WORKER_PORT), Handler)
     try:
         server.serve_forever()

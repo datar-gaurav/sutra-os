@@ -14,6 +14,23 @@ logger = logging.getLogger(__name__)
 # Each entry: (description, SQL)
 # Uses PostgreSQL "ADD COLUMN IF NOT EXISTS" (supported in PG 9.6+).
 MIGRATIONS: list[tuple[str, str]] = [
+    # ── CodeExecutor: fleet jobs can run on Shakha for Forge ────────────────
+    (
+        "fleet_jobs.runner",
+        "ALTER TABLE fleet_jobs ADD COLUMN IF NOT EXISTS runner VARCHAR(20) NOT NULL DEFAULT 'gemini'",
+    ),
+    (
+        "fleet_jobs.forge_request_id",
+        "ALTER TABLE fleet_jobs ADD COLUMN IF NOT EXISTS forge_request_id VARCHAR(36)",
+    ),
+    (
+        "fleet_jobs.external_ref",
+        "ALTER TABLE fleet_jobs ADD COLUMN IF NOT EXISTS external_ref VARCHAR(100)",
+    ),
+    (
+        "fleet_jobs.ix_forge_request_id",
+        "CREATE INDEX IF NOT EXISTS ix_fleet_jobs_forge_request_id ON fleet_jobs (forge_request_id)",
+    ),
     # ── Memory three-tier fields (Phase 5.1) ─────────────────────────────────
     (
         "memories.tier",

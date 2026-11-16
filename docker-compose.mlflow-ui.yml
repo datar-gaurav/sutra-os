@@ -1,0 +1,7 @@
+# Opt-in: publish the MLflow UI to this Mac only.
+#   docker compose -f docker-compose.yml -f docker-compose.mlflow-ui.yml up -d
+# Host 5001 → container 5000 (macOS reserves :5000 for AirPlay Receiver).
+services:
+  mlflow:
+    ports:
+      - "127.0.0.1:5001:5000"

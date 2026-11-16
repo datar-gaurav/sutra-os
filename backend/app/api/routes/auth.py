@@ -30,9 +30,27 @@ from app.models.user import User, UserRole
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def registration_role(user_count: int, allow_registration: bool) -> UserRole | None:
+    """Role for a new sign-up, or None when registration is closed.
+
+    The first account becomes the owner. Later accounts are only allowed when
+    the operator of this install explicitly opens registration.
+    """
+    if user_count == 0:
+        return UserRole.owner
+    return UserRole.operator if allow_registration else None
+
+
 @router.post("/register", response_model=TokenResponse)
 @limiter.limit(lambda: settings.rate_limit_auth_register)
 async def register(request: Request, data: UserCreate, db: AsyncSession = Depends(get_db)):
+    # Checked before the email/username lookups so a closed endpoint does not
+    # reveal which accounts exist.
+    count = (await db.execute(select(func.count()).select_from(User))).scalar() or 0
+    role = registration_role(count, settings.allow_registration)
+    if role is None:
+        raise HTTPException(status_code=403, detail="Registration is closed")
+
     result = await db.execute(select(User).where(User.email == data.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -40,10 +58,6 @@ async def register(request: Request, data: UserCreate, db: AsyncSession = Depend
     result2 = await db.execute(select(User).where(User.username == data.username))
     if result2.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username already taken")
-
-    # First registered user becomes owner
-    count = (await db.execute(select(func.count()).select_from(User))).scalar()
-    role = UserRole.owner if count == 0 else UserRole.operator
 
     user = User(
         email=data.email,

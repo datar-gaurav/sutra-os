@@ -54,6 +54,13 @@
     <key>FLEET_RUN_TIMEOUT_SEC</key>
     <string>1800</string>
 
+    <!-- Optional: run Forge requests on Shakha (Sutra CODE_EXECUTOR=shakha).
+         Point this at the `shakha` command; GEMINI_HOME / GITHUB_TOKEN are
+         then only needed if you also keep the Gemini runner.
+    <key>SHAKHA_BIN</key>
+    <string>/Users/YOU/Coding/git/shakha/bin/shakha</string>
+    -->
+
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
