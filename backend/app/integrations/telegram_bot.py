@@ -933,8 +933,6 @@ async def forge_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title=description[:80],
                 description=description,
                 repo_url=repo_url,
-                coding_engine=settings.forge_default_engine,
-                deploy_mode="manual",
                 status=ForgeStatus.planning.value,
                 source_channel="telegram",
                 telegram_chat_id=chat_id,
@@ -964,6 +962,26 @@ async def forge_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             req.branch_name = branch
             req.workspace_path = str(workspace)
             await db.commit()
+
+        # Executors that plan and ask for approval themselves (Shakha) take the
+        # whole request; the built-in one keeps the Telegram plan-review flow.
+        from app.core.code_executor import get_executor
+        executor = get_executor()
+        if not executor.reviews_plan:
+            ok, reason = executor.availability()
+            if ok:
+                await executor.start(req.id)
+                text = (
+                    f"🔧 Forge `{req.id[:8]}` handed to *{escape_markdown(executor.name)}*\\. "
+                    "It will plan, ask for approval and open a draft PR\\."
+                )
+            else:
+                text = f"⚠️ {escape_markdown(reason)}"
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id, message_id=think_msg.message_id,
+                text=text, parse_mode="MarkdownV2",
+            )
+            return
 
         # Run planning in background and update user
         asyncio.create_task(_telegram_forge_plan(req.id, repo_url, description, chat_id, think_msg.message_id, context))

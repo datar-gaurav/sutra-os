@@ -19,6 +19,7 @@ class FleetStatus(str, Enum):
     running = "running"                # gemini cli is executing
     pushing = "pushing"                # worker is committing + pushing
     pr_created = "pr_created"          # PR is open; terminal success
+    completed = "completed"            # finished without a PR (e.g. Shakha publish policy "none")
     failed = "failed"
     cancelled = "cancelled"
 
@@ -71,6 +72,18 @@ class FleetJob(Base, TimestampMixin):
 
     # Error details if status == failed
     error_log: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Which host runner executes this job: "gemini" (the worker's own CLI
+    # pipeline) or "shakha" (handed to Shakha). Workers only claim runners
+    # they announce, so an older worker never picks up a Shakha job.
+    runner: Mapped[str] = mapped_column(String(20), nullable=False, default="gemini")
+
+    # The ForgeRequest this job executes, when Forge's CodeExecutor queued it.
+    forge_request_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+
+    # The runner's own id for the work (Shakha task id), stored next to ours
+    # so retries and reconnects never create duplicates.
+    external_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Creator (None when enqueued by the triage scheduler)
     creator_user_id: Mapped[str | None] = mapped_column(

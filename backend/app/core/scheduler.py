@@ -826,9 +826,17 @@ async def run_forge_queue():
 
     print(f"[Scheduler] Forge queue: processing {len(queued)} request(s) sequentially.")
 
+    from app.core.code_executor import CodeExecutorUnavailable, get_executor
+
+    executor = get_executor()
+    ok, reason = executor.availability()
+    if not ok:
+        print(f"[Scheduler] Forge queue: not running — {reason}")
+        return
+
     for req in queued:
         forge_id = req.id
-        print(f"[Scheduler] Forge queue: starting {forge_id!r} — '{req.title}'")
+        print(f"[Scheduler] Forge queue: starting {forge_id!r} — '{req.title}' via {executor.name}")
 
         # Re-check status in case it changed since we loaded the list
         async with async_session_factory() as db:
@@ -837,24 +845,22 @@ async def run_forge_queue():
                 print(f"[Scheduler] Forge queue: skipping {forge_id!r} (status changed to {getattr(fresh, 'status', 'gone')})")
                 continue
 
-            # Transition to planning so the UI shows progress
-            fresh.status = ForgeStatus.planning.value
-            await db.commit()
+        # Executors that review plans themselves (Shakha) schedule their own
+        # work: hand every queued request over and move on.
+        if not executor.reviews_plan:
+            try:
+                await executor.start(forge_id)
+            except CodeExecutorUnavailable as e:
+                print(f"[Scheduler] Forge queue: {executor.name} unavailable — {e}")
+                return
+            except Exception as e:
+                print(f"[Scheduler] Forge queue: hand-off failed for {forge_id!r}: {e}")
+            continue
 
         try:
-            from app.api.routes.forge import _run_planning
-            await _run_planning(
-                forge_id,
-                req.repo_url,
-                req.description,
-                req.workspace_path or "",
-                req.branch_name or "",
-                req.llm_provider,
-                req.llm_model,
-                req.auto_approve_plan,
-            )
+            await executor.start(forge_id, wait=True)
         except Exception as e:
-            print(f"[Scheduler] Forge queue: _run_planning failed for {forge_id!r}: {e}")
+            print(f"[Scheduler] Forge queue: planning failed for {forge_id!r}: {e}")
             async with async_session_factory() as db:
                 stuck = await db.get(ForgeRequest, forge_id)
                 if stuck and stuck.status == ForgeStatus.planning.value:
@@ -863,8 +869,8 @@ async def run_forge_queue():
                     await db.commit()
             continue
 
-        # If auto_approve_plan, _run_planning will have already kicked off
-        # _run_coding via create_task inside the engine.  We wait for it to
+        # If auto_approve_plan, planning will have already kicked off
+        # coding via create_task inside the executor.  We wait for it to
         # finish before moving to the next request so the queue stays serial.
         if req.auto_approve_plan:
             # Poll until this request leaves the coding/testing states

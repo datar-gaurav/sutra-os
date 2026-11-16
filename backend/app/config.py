@@ -246,6 +246,19 @@ class Settings(BaseSettings):
     rate_limit_auth_register: str = "20/hour"
     rate_limit_auth_refresh: str = "60/hour"
 
+    # ── Code execution ─────────────────────────────────────────────────────
+    # Who does Forge's coding work: "builtin" (in-process pipeline),
+    # "shakha" (optional plugin via the fleet worker on the Mac), or
+    # "disabled". Unknown values behave as disabled.
+    code_executor: str = "builtin"
+
+    # ── Registration ───────────────────────────────────────────────────────
+    # The first account is always allowed and becomes the owner. After that,
+    # /auth/register is closed unless ALLOW_REGISTRATION=true. Deliberately
+    # env-only (not in system_settings.SETTINGS_SCHEMA) so a logged-in session
+    # cannot reopen sign-ups from the Settings UI.
+    allow_registration: bool = False
+
     @field_validator("encryption_key", mode="before")
     @classmethod
     def ensure_encryption_key(cls, v: str) -> str:

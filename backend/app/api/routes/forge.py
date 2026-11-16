@@ -11,6 +11,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.code_executor import (
+    CodeExecutorUnavailable,
+    broadcast_forge as _broadcast,
+    cancel_everywhere,
+    get_executor,
+)
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.forge import ForgeRequest, ForgeStatus
@@ -213,14 +219,13 @@ async def approve_plan(
         raise HTTPException(status_code=404, detail="ForgeRequest not found")
     if req.status != ForgeStatus.awaiting_plan_approval.value:
         raise HTTPException(status_code=400, detail=f"Request is in status '{req.status}', expected awaiting_plan_approval")
+    executor = _plan_reviewing_executor()
 
     req.status = ForgeStatus.coding.value
     await db.commit()
     await db.refresh(req)
 
-    # Run coding in background
-    asyncio.create_task(_run_coding(req.id))
-
+    await _run(executor.execute(req.id))
     _broadcast(req.id, req.status)
     return req
 
@@ -236,6 +241,7 @@ async def request_plan_changes(
     req = await db.get(ForgeRequest, forge_id)
     if not req:
         raise HTTPException(status_code=404, detail="ForgeRequest not found")
+    executor = _plan_reviewing_executor()
 
     rounds = list(req.plan_feedback or [])
     rounds.append({
@@ -244,19 +250,10 @@ async def request_plan_changes(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
     req.plan_feedback = rounds
-    req.status = ForgeStatus.planning.value
     await db.commit()
+
+    await _run(executor.start(req.id, feedback=payload.feedback))
     await db.refresh(req)
-
-    asyncio.create_task(_run_planning(
-        req.id, req.repo_url,
-        f"{req.description}\n\nUser feedback: {payload.feedback}",
-        req.workspace_path or "",
-        req.branch_name or "",
-        req.llm_provider, req.llm_model, req.auto_approve_plan,
-    ))
-
-    _broadcast(req.id, req.status)
     return req
 
 
@@ -266,10 +263,7 @@ async def cancel_forge(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Cancel a forge request and clean up the workspace."""
-    from app.core.forge_engine import cleanup_workspace
-    from pathlib import Path
-
+    """Cancel a forge request wherever it runs (local workspace, Shakha job)."""
     req = await db.get(ForgeRequest, forge_id)
     if not req:
         raise HTTPException(status_code=404, detail="ForgeRequest not found")
@@ -278,9 +272,7 @@ async def cancel_forge(
     await db.commit()
     await db.refresh(req)
 
-    if req.workspace_path:
-        cleanup_workspace(Path(req.workspace_path))
-
+    await cancel_everywhere(req.id)
     _broadcast(req.id, req.status)
     return req
 
@@ -291,16 +283,12 @@ async def delete_forge_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Delete a forge request and clean up its workspace."""
-    from app.core.forge_engine import cleanup_workspace
-    from pathlib import Path
-
+    """Delete a forge request, stopping any work it still has running."""
     req = await db.get(ForgeRequest, forge_id)
     if not req:
         raise HTTPException(status_code=404, detail="ForgeRequest not found")
 
-    if req.workspace_path:
-        cleanup_workspace(Path(req.workspace_path))
+    await cancel_everywhere(req.id)
 
     await db.delete(req)
     await db.commit()
@@ -311,7 +299,14 @@ async def delete_forge_request(
 async def get_forge_config(current_user: User = Depends(get_current_user)):
     """Return forge configuration."""
     from app.config import settings
+    executor = get_executor()
+    ok, reason = executor.availability()
     return {
+        "executor": executor.name,
+        "executor_available": ok,
+        "executor_reason": reason,
+        # False → hide Approve / Request changes: the executor reviews plans itself
+        "reviews_plan": executor.reviews_plan,
         "max_concurrent": settings.forge_max_concurrent,
         "default_provider": settings.forge_default_provider,
         "default_model": settings.forge_default_model,
@@ -360,240 +355,27 @@ async def run_forge_now(
             detail=f"Can only run queued or failed requests immediately, got '{req.status}'",
         )
 
-    req.status = ForgeStatus.planning.value
-    req.error_log = None
-    await db.commit()
+    await _run(get_executor().start(req.id))
     await db.refresh(req)
-
-    _broadcast(req.id, req.status)
-
-    asyncio.create_task(_run_planning(
-        req.id, req.repo_url, req.description,
-        req.workspace_path, req.branch_name,
-        req.llm_provider, req.llm_model,
-        req.auto_approve_plan or False,
-    ))
-
     return req
 
 
-# ─── Background task helpers ──────────────────────────────────────────────────
+# ─── Executor helpers ─────────────────────────────────────────────────────────
 
 
-async def _run_planning(
-    forge_id: str, repo_url: str, description: str, workspace_path: str, branch: str,
-    llm_provider: str, llm_model: str, auto_approve_plan: bool,
-) -> None:
-    """Background: clone (if needed) + generate plan."""
-    from app.db.session import async_session_factory
-    from app.core.forge_engine import clone_repo, create_branch, generate_plan, workspace_for
-    from pathlib import Path
-
+async def _run(coro):
+    """Await an executor call, turning 'unavailable' into a 503."""
     try:
-        async with async_session_factory() as db:
-            req = await db.get(ForgeRequest, forge_id)
-            if not req:
-                return
-
-            ws = Path(workspace_path) if workspace_path else workspace_for(forge_id)
-
-            # Clone only if workspace doesn't exist yet
-            if not ws.exists():
-                try:
-                    await clone_repo(repo_url, ws)
-                    await create_branch(ws, branch)
-                    _append_log(req, "log", "Repo cloned, branch created.")
-                except Exception as e:
-                    req.status = ForgeStatus.failed.value
-                    req.error_log = str(e)
-                    await db.commit()
-                    _broadcast(forge_id, req.status)
-                    return
-
-            try:
-                plan = await generate_plan(repo_url, description, ws, llm_provider, llm_model)
-                req.plan = plan
-                _append_log(req, "log", f"Plan ready: {plan.get('summary', '')}")
-
-                if auto_approve_plan:
-                    req.status = ForgeStatus.coding.value
-                    _append_log(req, "log", "Auto-approved plan, starting coding...")
-                    await db.commit()
-                    _broadcast(forge_id, req.status)
-                    asyncio.create_task(_run_coding(forge_id))
-                    return
-                else:
-                    req.status = ForgeStatus.awaiting_plan_approval.value
-            except Exception as e:
-                req.status = ForgeStatus.failed.value
-                req.error_log = str(e)
-
-            await db.commit()
-            _broadcast(forge_id, req.status)
-    except Exception as e:
-        logger.error(f"[Forge] _run_planning crashed for {forge_id}: {e}")
-        try:
-            async with async_session_factory() as db:
-                req = await db.get(ForgeRequest, forge_id)
-                if req and req.status == ForgeStatus.planning.value:
-                    req.status = ForgeStatus.failed.value
-                    req.error_log = f"Planning crashed: {e}"
-                    await db.commit()
-                    _broadcast(forge_id, req.status)
-        except Exception:
-            pass
+        return await coro
+    except CodeExecutorUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
-async def _run_coding(forge_id: str) -> None:
-    """Background: execute coding plan, run tests, commit, push, open PR."""
-    from app.db.session import async_session_factory
-    from app.core.forge_engine import (
-        run_coding, detect_and_run_tests,
-        commit_all, push_branch, workspace_for, _get_semaphore,
-    )
-    from pathlib import Path
-
-    semaphore = _get_semaphore()
-    async with semaphore:
-        async with async_session_factory() as db:
-            req = await db.get(ForgeRequest, forge_id)
-            if not req:
-                return
-            ws = Path(req.workspace_path) if req.workspace_path else workspace_for(forge_id)
-            provider = req.llm_provider
-            model = req.llm_model
-            plan = req.plan
-            desc = req.description
-            branch = req.branch_name
-
-        log_entries = list(req.coding_log or [])
-        error_msg = None
-
-        async for event in run_coding(ws, plan, desc, provider, model):
-            entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "event": event["event"],
-                "message": event["message"],
-            }
-            log_entries.append(entry)
-
-            async with async_session_factory() as db:
-                req2 = await db.get(ForgeRequest, forge_id)
-                if req2:
-                    req2.coding_log = log_entries
-                    await db.commit()
-
-            if event["event"] == "error":
-                error_msg = event["message"]
-                break
-
-    async with async_session_factory() as db:
-        req3 = await db.get(ForgeRequest, forge_id)
-        if not req3:
-            return
-        if error_msg:
-            req3.status = ForgeStatus.failed.value
-            req3.error_log = error_msg
-            await db.commit()
-            _broadcast(forge_id, req3.status)
-            return
-
-        # Run tests
-        req3.status = ForgeStatus.testing.value
-        _append_log(req3, "log", "Running tests...")
-        await db.commit()
-        _broadcast(forge_id, req3.status)
-
-    try:
-        test_results = await detect_and_run_tests(ws)
-    except Exception as e:
-        test_results = {"framework": "error", "exit_code": -1, "stderr": str(e)}
-
-    async with async_session_factory() as db:
-        req4 = await db.get(ForgeRequest, forge_id)
-        if not req4:
-            return
-        req4.test_results = test_results
-        fw = test_results.get("framework", "none")
-        ec = test_results.get("exit_code")
-        if fw == "none":
-            _append_log(req4, "log", "No test framework detected.")
-        else:
-            passed = test_results.get("passed")
-            failed = test_results.get("failed")
-            summary_parts = [f"framework={fw}", f"exit_code={ec}"]
-            if passed is not None:
-                summary_parts.append(f"passed={passed}")
-            if failed is not None:
-                summary_parts.append(f"failed={failed}")
-            _append_log(req4, "log", f"Tests finished: {', '.join(summary_parts)}")
-
-        # Commit + push + open PR
-        try:
-            plan_summary = (req4.plan or {}).get("summary", req4.title)
-            await commit_all(ws, f"feat: {plan_summary}\n\nGenerated by Sutra Forge")
-            await push_branch(ws, branch)
-
-            from github import Github
-            from app.config import settings
-            from app.core.env_utils import get_secret
-            gh = Github(await get_secret("GITHUB_TOKEN", settings.github_token or ""))
-            repo = gh.get_repo(req4.repo_url)
-
-            # Build PR body with test results
-            test_section = ""
-            if fw != "none" and fw != "error":
-                test_section = f"\n\n## Test Results\n- Framework: {fw}\n- Exit code: {ec}"
-                if passed is not None:
-                    test_section += f"\n- Passed: {passed}"
-                if failed is not None:
-                    test_section += f"\n- Failed: {failed}"
-                skipped = test_results.get("skipped")
-                if skipped is not None:
-                    test_section += f"\n- Skipped: {skipped}"
-
-            pr_body = (
-                f"## Summary\n{plan_summary}\n\n"
-                f"**Feature request:**\n{req4.description}"
-                f"{test_section}\n\n"
-                f"---\n🤖 Generated by Sutra Forge"
-            )
-            pr = repo.create_pull(
-                title=f"feat: {req4.title}",
-                body=pr_body,
-                head=branch,
-                base=repo.default_branch,
-            )
-            req4.pr_url = pr.html_url
-            req4.pr_number = pr.number
-            req4.status = ForgeStatus.completed.value
-            _append_log(req4, "log", f"PR #{pr.number} created: {pr.html_url}")
-        except Exception as e:
-            req4.status = ForgeStatus.failed.value
-            req4.error_log = str(e)
-
-        await db.commit()
-        _broadcast(forge_id, req4.status)
-
-
-def _append_log(req, event: str, message: str) -> None:
-    from datetime import datetime, timezone
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "event": event,
-        "message": message,
-    }
-    req.coding_log = list(req.coding_log or []) + [entry]
-
-
-def _broadcast(forge_id: str, status: str) -> None:
-    async def _do():
-        try:
-            from app.api.websocket import ws_manager
-            await ws_manager.broadcast({"type": "forge_update", "forge_request_id": forge_id, "status": status})
-        except Exception:
-            pass
-    try:
-        asyncio.create_task(_do())
-    except Exception:
-        pass
+def _plan_reviewing_executor():
+    executor = get_executor()
+    if not executor.reviews_plan:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The {executor.name} executor reviews plans itself; approve or give feedback there.",
+        )
+    return executor

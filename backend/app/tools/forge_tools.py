@@ -37,6 +37,12 @@ def create_forge_tools(creator_user_id: str | None = None):
             make_branch_name, workspace_for,
         )
 
+        handed_off = await _start_with_external_executor(
+            repo_url, description, llm_provider, llm_model, creator_user_id,
+        )
+        if handed_off is not None:
+            return handed_off
+
         async with async_session_factory() as db:
             req = ForgeRequest(
                 title=description[:80],
@@ -105,6 +111,8 @@ def create_forge_tools(creator_user_id: str | None = None):
             forge_request_id: The ID of the ForgeRequest to update.
             feedback: Optional user feedback to incorporate into the revised plan.
         """
+        if (blocked := _builtin_only()) is not None:
+            return blocked
         from app.db.session import async_session_factory
         from app.models.forge import ForgeRequest, ForgeStatus
         from app.core.forge_engine import generate_plan, workspace_for
@@ -151,6 +159,8 @@ def create_forge_tools(creator_user_id: str | None = None):
         Args:
             forge_request_id: The ID of the approved ForgeRequest.
         """
+        if (blocked := _builtin_only()) is not None:
+            return blocked
         from app.db.session import async_session_factory
         from app.models.forge import ForgeRequest, ForgeStatus
         from app.core.forge_engine import (
@@ -246,6 +256,8 @@ def create_forge_tools(creator_user_id: str | None = None):
         Args:
             forge_request_id: The ID of the ForgeRequest after coding is complete.
         """
+        if (blocked := _builtin_only()) is not None:
+            return blocked
         from app.db.session import async_session_factory
         from app.models.forge import ForgeRequest, ForgeStatus
         from app.core.forge_engine import commit_all, push_branch, workspace_for
@@ -334,8 +346,6 @@ def create_forge_tools(creator_user_id: str | None = None):
         """
         from app.db.session import async_session_factory
         from app.models.forge import ForgeRequest, ForgeStatus
-        from app.core.forge_engine import cleanup_workspace, workspace_for
-        from pathlib import Path
 
         async with async_session_factory() as db:
             req = await db.get(ForgeRequest, forge_request_id)
@@ -347,9 +357,9 @@ def create_forge_tools(creator_user_id: str | None = None):
                 req.error_log = f"Cancelled: {reason}"
             await db.commit()
 
-            # Clean up workspace
-            ws = Path(req.workspace_path) if req.workspace_path else workspace_for(req.id)
-            cleanup_workspace(ws)
+            # Stop the work wherever it runs (local workspace or Shakha job)
+            from app.core.code_executor import cancel_everywhere
+            await cancel_everywhere(req.id)
 
             _broadcast_forge_update(req.id, req.status)
 
@@ -369,6 +379,60 @@ def create_forge_tools(creator_user_id: str | None = None):
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _builtin_only() -> str | None:
+    """Plan/execute/PR tools drive the built-in pipeline step by step; other
+    executors run the whole job themselves."""
+    from app.core.code_executor import get_executor
+
+    executor = get_executor()
+    if executor.reviews_plan:
+        return None
+    return json.dumps({
+        "error": f"Forge runs on the {executor.name} executor, which plans, codes and opens "
+                 "the PR itself. Use forge_start to hand work over and forge_cancel to stop it.",
+    })
+
+
+async def _start_with_external_executor(
+    repo_url: str, description: str, llm_provider: str, llm_model: str,
+    creator_user_id: str | None,
+) -> str | None:
+    """If the executor isn't the built-in one, create the request and hand it
+    over. Returns the tool result, or None to continue with the built-in flow."""
+    from app.core.code_executor import CodeExecutorUnavailable, get_executor
+    from app.db.session import async_session_factory
+    from app.models.forge import ForgeRequest, ForgeStatus
+
+    executor = get_executor()
+    if executor.reviews_plan:
+        return None
+    ok, reason = executor.availability()
+    if not ok:
+        return json.dumps({"error": reason})
+
+    async with async_session_factory() as db:
+        req = ForgeRequest(
+            title=description[:80], description=description, repo_url=repo_url,
+            llm_provider=llm_provider, llm_model=llm_model,
+            status=ForgeStatus.queued.value, creator_user_id=creator_user_id,
+            source_channel="agent", coding_log=[], plan_feedback=[],
+        )
+        db.add(req)
+        await db.commit()
+        forge_id = req.id
+    try:
+        await executor.start(forge_id)
+    except CodeExecutorUnavailable as e:
+        return json.dumps({"error": str(e), "forge_request_id": forge_id})
+    return json.dumps({
+        "forge_request_id": forge_id,
+        "status": "coding",
+        "executor": executor.name,
+        "message": f"Handed to {executor.name}. It will plan, ask for approval and open a "
+                   "draft PR; follow progress in Forge.",
+    })
 
 
 def _append_log(req, event: str, message: str) -> None:

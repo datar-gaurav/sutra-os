@@ -63,7 +63,9 @@ Once ready:
 | **Backend API** | http://localhost:8000 |
 | **API Docs** | http://localhost:8000/docs |
 
-The first user to register becomes the **owner**. Subsequent users get the **operator** role.
+The first user to register becomes the **owner**. After that, registration is **closed**: `/api/auth/register` returns 403 unless you set `ALLOW_REGISTRATION=true` in `backend/.env` (new users then get the **operator** role).
+
+**Network exposure:** the backend and frontend are published on `127.0.0.1` only, so they are reachable from this machine but not from your LAN. MLflow, Postgres and Redis are not published at all. To reach Sutra from another device, prefer [Tailscale Serve](https://tailscale.com/kb/1312/serve) (not Funnel); the frontend calls the API at `NEXT_PUBLIC_API_URL`, so serve the backend too and point that variable at its served URL. Alternatively set `SUTRA_BIND_HOST=0.0.0.0` in your shell or a root `.env` file — only with registration closed. To view the MLflow UI locally, add `-f docker-compose.mlflow-ui.yml` (serves `http://localhost:5001`).
 
 **Useful commands after install:**
 
@@ -217,6 +219,20 @@ All configuration is done through environment variables (`backend/.env`) or the 
 | `GOOGLE_API_KEY` | Google Gemini API key |
 | `GROQ_API_KEY` | Groq API key |
 | `SLACK_BOT_TOKEN` | Slack bot integration |
+| `ALLOW_REGISTRATION` | Allow sign-ups after the owner account exists (default: `false`) |
+| `CODE_EXECUTOR` | Who runs Forge's coding work: `builtin` (default), `shakha`, or `disabled` |
+
+### Running Forge on Shakha (optional)
+
+[Shakha](https://github.com/datar-gaurav/shakha) is a separate, macOS-only engine for parallel coding agents. With `CODE_EXECUTOR=shakha`, Forge hands each request to Shakha instead of running its own pipeline. Shakha plans the work, asks for your approval in Shakha or Powerdial, runs checks and review, and opens a draft PR. Forge shows its progress and the PR link.
+
+Sutra never connects to Shakha. It queues the request, and the fleet worker on your Mac (`scripts/fleet_worker.py`) claims it and drives the `shakha` command over Shakha's local socket.
+
+1. Set `FLEET_WORKER_TOKEN` in `backend/.env` and `CODE_EXECUTOR=shakha`.
+2. Run the fleet worker with the same token and `SHAKHA_BIN` pointing at the `shakha` command (see `scripts/com.sutra.fleet-worker.plist`). `GEMINI_HOME` and `GITHUB_TOKEN` are then optional.
+3. Add each target repository to Shakha (`shakha repo add /path/to/checkout`). The worker matches Forge's `owner/repo` to a checkout by its git remote.
+
+Without Shakha, leave `CODE_EXECUTOR=builtin`. Nothing else changes.
 
 ## Production Deployment
 

@@ -61,6 +61,9 @@ class FleetJobResponse(BaseModel):
     pr_url: str | None
     pr_number: int | None
     error_log: str | None
+    runner: str = "gemini"
+    forge_request_id: str | None = None
+    external_ref: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -89,6 +92,15 @@ class StatusUpdate(BaseModel):
     error: str | None = None
     pr_url: str | None = None
     pr_number: int | None = None
+    # The runner's own id for the job (Shakha task id); set once.
+    external_ref: str | None = None
+    # One human-readable progress line, mirrored into the Forge log.
+    note: str | None = None
+
+
+class ClaimRequest(BaseModel):
+    # Runners this worker can execute. Omitted (older workers) → ["gemini"].
+    runners: list[str] | None = None
 
 
 # ─── UI endpoints (user-authed) ───────────────────────────────────────────────
@@ -169,8 +181,9 @@ async def cancel_job(
     job = await db.get(FleetJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="FleetJob not found")
-    job.status = FleetStatus.cancelled.value
-    await db.commit()
+    # Through update_status so a Forge-owned job cancels its ForgeRequest too.
+    await fleet.update_status(db, job_id, FleetStatus.cancelled.value,
+                              note="Cancelled from the fleet queue")
     await db.refresh(job)
     return job
 
@@ -186,7 +199,8 @@ async def delete_job(
     job = await db.get(FleetJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="FleetJob not found")
-    terminal = {FleetStatus.pr_created.value, FleetStatus.failed.value, FleetStatus.cancelled.value}
+    terminal = {FleetStatus.pr_created.value, FleetStatus.completed.value,
+                FleetStatus.failed.value, FleetStatus.cancelled.value}
     if job.status not in terminal:
         raise HTTPException(
             status_code=409,
@@ -202,13 +216,25 @@ async def delete_job(
 
 @router.post("/claim", response_model=FleetJobResponse | None)
 async def worker_claim(
+    payload: ClaimRequest | None = None,
     db: AsyncSession = Depends(get_db),
     _: str = Depends(require_worker_token),
     worker_id: str = Depends(require_worker_id),
 ):
-    """Host worker pulls the next queued job (atomic claim). 204 if queue empty."""
-    job = await fleet.claim_next_job(db, worker_id)
+    """Host worker pulls the next queued job it can run (atomic claim)."""
+    job = await fleet.claim_next_job(db, worker_id, (payload.runners if payload else None))
     return job  # None → FastAPI returns null; worker treats as "nothing to do"
+
+
+@router.get("/worker/sync", response_model=list[FleetJobResponse])
+async def worker_sync(
+    runner: str,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(require_worker_token),
+    worker_id: str = Depends(require_worker_id),
+):
+    """Jobs this worker must keep in step with its runner (active or just cancelled)."""
+    return await fleet.jobs_to_sync(db, worker_id, runner)
 
 
 @router.post("/{job_id}/logs")
@@ -240,10 +266,14 @@ async def worker_status(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(require_worker_token),
 ):
-    await fleet.update_status(
-        db, job_id, payload.status,
-        error=payload.error, pr_url=payload.pr_url, pr_number=payload.pr_number,
-    )
+    try:
+        await fleet.update_status(
+            db, job_id, payload.status,
+            error=payload.error, pr_url=payload.pr_url, pr_number=payload.pr_number,
+            external_ref=payload.external_ref, note=payload.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     job = await db.get(FleetJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="FleetJob not found")
