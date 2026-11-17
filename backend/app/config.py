@@ -135,6 +135,21 @@ class Settings(BaseSettings):
     fleet_watchdog_cron: str = "*/15 * * * *"           # every 15 min
     fleet_dispatch_timeout_sec: float = 5.0             # how long to wait on /run
 
+    # Claude Code — subscription-backed provider. A purpose slot with provider
+    # "claude_code" sends the whole chat turn to the host Fleet worker, which
+    # runs the `claude` CLI with the user's Claude login (POST /exec/claude).
+    # Uses fleet_worker_url + fleet_worker_token.
+    claude_code_permission_mode: str = "acceptEdits"    # default | acceptEdits | plan
+    claude_code_allowed_tools: str = ""                 # comma-separated, e.g. "Bash(python3:*)"
+    claude_code_timeout_sec: int = 900                  # per turn; worker caps it too
+    claude_code_max_turns: int = 0                      # 0 = CLI default
+
+    # Codex — same idea on a ChatGPT subscription (provider "codex"). The
+    # worker runs `codex exec --json` with the host's `codex login`.
+    codex_sandbox_mode: str = "workspace-write"         # read-only | workspace-write
+    codex_reasoning_effort: str = ""                    # "" = Codex config default; low|medium|high…
+    codex_timeout_sec: int = 900                        # per turn; worker caps it too
+
     # Social Pulse — trending content research
     social_pulse_cron: str = "*/30 * * * *"  # every 30 min
     social_pulse_default_subreddits: str = "technology,programming,business,marketing,worldnews"

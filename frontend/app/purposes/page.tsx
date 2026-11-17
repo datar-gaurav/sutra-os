@@ -118,6 +118,8 @@ const PROVIDERS = [
     { value: "clod", label: "Clod.io" },
     { value: "nvidia_nim", label: "NVIDIA NIM" },
     { value: "openai_compatible", label: "OpenAI Compatible" },
+    { value: "claude_code", label: "Claude Code (subscription)" },
+    { value: "codex", label: "Codex (ChatGPT subscription)" },
 ];
 
 async function fetchRawModelsForProvider(provider: string): Promise<string[]> {
@@ -140,6 +142,12 @@ async function fetchRawModelsForProvider(provider: string): Promise<string[]> {
             return (await llmsApi.clodModels()).map(m => m.id);
         case "nvidia_nim":
             return (await llmsApi.nvidiaModels()).map(m => m.id);
+        case "claude_code":
+            // Runs the Claude Code CLI on the host with your Claude login (Fleet worker).
+            return ["sonnet", "opus", "haiku", "opusplan"];
+        case "codex":
+            // Runs the Codex CLI on the host with your ChatGPT login (Fleet worker).
+            return (await llmsApi.codexModels()).map(m => m.id);
         default:
             return [];
     }

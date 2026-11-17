@@ -61,6 +61,30 @@
     <string>/Users/YOU/Coding/git/shakha/bin/shakha</string>
     -->
 
+    <!-- Optional: Claude Code provider (purpose slot provider "claude_code").
+         Uses your Claude subscription: run `claude` once and sign in. The
+         worker finds the CLI on PATH or at ~/.local/bin/claude by default.
+         Each agent gets a folder under CLAUDE_WORKSPACE_ROOT
+         (default: FLEET_WORKSPACE_ROOT/claude-code).
+    <key>CLAUDE_BIN</key>
+    <string>/Users/YOU/.local/bin/claude</string>
+    <key>CLAUDE_WORKSPACE_ROOT</key>
+    <string>/Users/YOU/agent_workspaces/claude-code</string>
+    <key>CLAUDE_MAX_CONCURRENT</key>
+    <string>2</string>
+    -->
+
+    <!-- Optional: Codex provider (purpose slot provider "codex").
+         Uses your ChatGPT subscription: run `codex login` and choose Sign in
+         with ChatGPT. Found on PATH or at ~/.local/bin/codex by default.
+    <key>CODEX_BIN</key>
+    <string>/Users/YOU/.local/bin/codex</string>
+    <key>CODEX_WORKSPACE_ROOT</key>
+    <string>/Users/YOU/agent_workspaces/codex</string>
+    <key>CODEX_MAX_CONCURRENT</key>
+    <string>2</string>
+    -->
+
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>

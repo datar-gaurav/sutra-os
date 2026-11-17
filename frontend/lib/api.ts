@@ -613,6 +613,7 @@ export const llmsApi = {
     googleModels: () => apiFetch<GeminiModel[]>("/api/llms/google/models"),
     clodModels: () => apiFetch<ClodModel[]>("/api/llms/clod/models"),
     nvidiaModels: () => apiFetch<NvidiaModel[]>("/api/llms/nvidia_nim/models"),
+    codexModels: () => apiFetch<{ id: string; name: string }[]>("/api/llms/codex/models"),
     anthropicModels: () => apiFetch<{ id: string; name: string }[]>("/api/llms/anthropic/models"),
     openaiModels: () => apiFetch<{ id: string; name: string }[]>("/api/llms/openai/models"),
     openRouterQuota: () => apiFetch<OpenRouterQuota>("/api/llms/openrouter/quota"),
