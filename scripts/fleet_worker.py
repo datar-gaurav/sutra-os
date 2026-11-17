@@ -62,7 +62,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -644,6 +644,194 @@ def shakha_sync_loop() -> None:
         time.sleep(SHAKHA_SYNC_SECONDS)
 
 
+# ─── Claude Code exec (subscription-backed chat turns) ───────────────────────
+#
+# Sutra agents whose purpose slot resolves to provider "claude_code" send each
+# chat turn here. We run the official `claude` CLI headless, logged in with the
+# user's Claude subscription (credentials stay in the macOS keychain / ~/.claude
+# on this host and never reach Docker), and relay its stream-json events back
+# as NDJSON. One working folder per agent, so files persist across turns.
+
+CLAUDE_BIN = os.path.expanduser(
+    os.environ.get("CLAUDE_BIN", "").strip()
+    or shutil.which("claude")
+    or "~/.local/bin/claude"
+)
+CLAUDE_WORKSPACE_ROOT = Path(os.path.expanduser(
+    os.environ.get("CLAUDE_WORKSPACE_ROOT", "").strip() or str(WORKSPACE_ROOT / "claude-code")
+))
+CLAUDE_MAX_CONCURRENT = int(os.environ.get("CLAUDE_MAX_CONCURRENT", "2"))
+CLAUDE_MAX_TIMEOUT_SEC = int(os.environ.get("CLAUDE_MAX_TIMEOUT_SEC", "1800"))
+_CLAUDE_ALLOW_BYPASS = os.environ.get("CLAUDE_ALLOW_BYPASS", "").strip() == "1"
+_claude_slots = threading.BoundedSemaphore(CLAUDE_MAX_CONCURRENT)
+_WORKDIR_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_CLAUDE_MODEL_RE = re.compile(r"^[A-Za-z0-9._\[\]-]{1,80}$")
+_CLAUDE_TOOL_RE = re.compile(r"^[A-Za-z0-9_]+(\([^()\n]{0,200}\))?$")
+_FILE_SNAPSHOT_LIMIT = 5000
+
+
+def claude_ready() -> bool:
+    return bool(CLAUDE_BIN) and os.path.isfile(CLAUDE_BIN) and os.access(CLAUDE_BIN, os.X_OK)
+
+
+def _claude_env() -> dict:
+    """Env for the claude subprocess.
+
+    Keeps the real HOME/USER so the CLI finds the subscription login, and drops
+    everything secret. ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are removed on
+    purpose: if present, the CLI would bill the API instead of the subscription.
+    """
+    keep = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SHELL", "TERM")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    env.setdefault("PATH", "/usr/bin:/bin:/usr/local/bin")
+    bin_dir = os.path.dirname(CLAUDE_BIN)
+    if bin_dir and bin_dir not in env["PATH"].split(":"):
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+    return env
+
+
+def _snapshot_files(root: Path) -> dict[str, float]:
+    """{relative path: mtime} for files under root, skipping dot-directories."""
+    out: dict[str, float] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "node_modules"]
+        for name in filenames:
+            p = Path(dirpath) / name
+            try:
+                out[str(p.relative_to(root))] = p.stat().st_mtime
+            except OSError:
+                continue
+            if len(out) >= _FILE_SNAPSHOT_LIMIT:
+                return out
+    return out
+
+
+def build_claude_cmd(req: dict) -> list[str]:
+    """Validate an /exec request and return the claude argv. Raises ValueError."""
+    model = str(req.get("model") or "sonnet").strip()
+    if not _CLAUDE_MODEL_RE.match(model):
+        raise ValueError(f"invalid model {model!r}")
+    mode = str(req.get("permission_mode") or "acceptEdits").strip()
+    allowed_modes = {"default", "acceptEdits", "plan"} | ({"bypassPermissions"} if _CLAUDE_ALLOW_BYPASS else set())
+    if mode not in allowed_modes:
+        raise ValueError(f"permission_mode {mode!r} not allowed (allowed: {sorted(allowed_modes)})")
+
+    cmd = [
+        CLAUDE_BIN, "-p",
+        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        "--model", model,
+        "--permission-mode", mode,
+    ]
+    tools = [t.strip() for t in (req.get("allowed_tools") or []) if str(t).strip()]
+    for t in tools:
+        if not _CLAUDE_TOOL_RE.match(t):
+            raise ValueError(f"invalid allowed tool {t!r}")
+    if tools:
+        cmd += ["--allowedTools", ",".join(tools)]
+    max_turns = req.get("max_turns")
+    if max_turns:
+        cmd += ["--max-turns", str(max(1, min(int(max_turns), 200)))]
+    system_prompt = str(req.get("system_prompt") or "").strip()
+    if system_prompt:
+        cmd += ["--append-system-prompt", system_prompt]
+    return cmd
+
+
+def handle_claude_exec(handler: "Handler", req: dict) -> None:
+    """Run one Claude Code turn and stream NDJSON events back to the caller."""
+    prompt = str(req.get("prompt") or "")
+    key = str(req.get("workdir_key") or "")
+    if not prompt.strip():
+        handler._json(400, {"error": "prompt is required"})
+        return
+    if not _WORKDIR_KEY_RE.match(key):
+        handler._json(400, {"error": "workdir_key must match [A-Za-z0-9_-]{1,64}"})
+        return
+    if not claude_ready():
+        handler._json(503, {"error": f"claude CLI not available at {CLAUDE_BIN} (not available)"})
+        return
+    try:
+        cmd = build_claude_cmd(req)
+    except (ValueError, TypeError) as e:
+        handler._json(400, {"error": str(e)})
+        return
+    if not _claude_slots.acquire(blocking=False):
+        handler._json(429, {"error": f"Claude Code at capacity ({CLAUDE_MAX_CONCURRENT} concurrent runs)"})
+        return
+
+    try:
+        timeout = max(30, min(int(req.get("timeout_sec") or 900), CLAUDE_MAX_TIMEOUT_SEC))
+        workdir = CLAUDE_WORKSPACE_ROOT / key
+        workdir.mkdir(parents=True, exist_ok=True)
+        before = _snapshot_files(workdir)
+
+        proc = subprocess.Popen(
+            cmd, cwd=str(workdir), env=_claude_env(),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1,
+        )
+        timed_out = threading.Event()
+
+        def _kill_on_timeout():
+            timed_out.set()
+            proc.kill()
+
+        timer = threading.Timer(timeout, _kill_on_timeout)
+        timer.daemon = True
+        timer.start()
+        stderr_tail: list[str] = []
+
+        def _drain_stderr():
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                stderr_tail.append(line.rstrip())
+                del stderr_tail[:-40]
+
+        threading.Thread(target=_drain_stderr, daemon=True).start()
+
+        # HTTP/1.0 response with no Content-Length: the body ends when we close.
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/x-ndjson")
+        handler.end_headers()
+
+        def emit(obj: dict) -> None:
+            handler.wfile.write((json.dumps(obj) + "\n").encode())
+            handler.wfile.flush()
+
+        try:
+            assert proc.stdin is not None and proc.stdout is not None
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+            emit({"type": "sutra_start", "workdir": str(workdir), "model": req.get("model")})
+            for line in proc.stdout:
+                line = line.strip()
+                if line:
+                    handler.wfile.write((line + "\n").encode())
+                    handler.wfile.flush()
+            code = proc.wait()
+            after = _snapshot_files(workdir)
+            changed = sorted(p for p, m in after.items() if before.get(p) != m)
+            emit({
+                "type": "sutra_end",
+                "exit_code": code,
+                "timed_out": timed_out.is_set(),
+                "timeout_sec": timeout,
+                "workdir": str(workdir),
+                "files": [str(workdir / p) for p in changed[:200]],
+                "stderr_tail": "\n".join(stderr_tail[-15:]),
+            })
+        except (BrokenPipeError, ConnectionResetError):
+            sys.stderr.write(f"[fleet] claude exec ({key}): caller disconnected, stopping run\n")
+            proc.kill()
+        finally:
+            timer.cancel()
+            if proc.poll() is None:
+                proc.kill()
+    finally:
+        _claude_slots.release()
+
+
 # ─── HTTP server ─────────────────────────────────────────────────────────────
 
 
@@ -689,11 +877,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "auth_ready": auth_ready,
                 "gemini_home": str(GEMINI_HOME) if GEMINI_HOME else None,
                 "shakha_ready": shakha_ready() if SHAKHA_BIN else None,
+                "claude_ready": claude_ready(),
             })
             return
         self._json(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path == "/exec/claude":
+            if not self._auth_ok():
+                self._json(403, {"error": "invalid bearer"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length <= 0 or length > 4_000_000:
+                    raise ValueError("body must be 1 byte to 4 MB of JSON")
+                req = json.loads(self.rfile.read(length).decode())
+                if not isinstance(req, dict):
+                    raise ValueError("body must be a JSON object")
+            except (ValueError, UnicodeDecodeError) as e:
+                self._json(400, {"error": f"bad request: {e}"})
+                return
+            handle_claude_exec(self, req)
+            return
         if self.path != "/run":
             self._json(404, {"error": "not found"})
             return
@@ -714,8 +919,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         t.start()
 
 
-class _ReuseAddrServer(socketserver.TCPServer):
+class _ReuseAddrServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    # Threaded so a long Claude Code turn on /exec/claude doesn't block
+    # /health or /run. Job execution itself is still serialized by _busy.
     allow_reuse_address = True
+    daemon_threads = True
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────

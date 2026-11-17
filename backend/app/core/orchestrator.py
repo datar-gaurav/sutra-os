@@ -219,6 +219,18 @@ class Orchestrator:
             except Exception as e:
                 raise RuntimeError(f"Smart routing failed: {e}")
 
+            if provider == "claude_code":
+                # Subscription-backed agent: the whole turn runs in the Claude
+                # Code CLI on the host, not in a LangGraph ReAct graph.
+                from app.core.claude_code_executor import ClaudeCodeExecutor
+
+                skill_blocks = "\n\n".join(s.body for s in (loaded_skills or []) if s.body)
+                system_prompt = shell.base_prompt + ("\n\n" + skill_blocks if skill_blocks else "")
+                executor = ClaudeCodeExecutor(
+                    agent_id=agent_id, model=model, system_prompt=system_prompt,
+                )
+                return executor, provider, model, refresh_hours
+
             llm = llm_registry.get_chat_model(
                 provider=provider,
                 model=model,
@@ -364,7 +376,9 @@ class Orchestrator:
                 f"{routed_provider}/{routed_model}" if routed_provider
                 else self._get_model_name(agent_id)
             )
-            if prompt_cache.should_cache(msg_dicts):
+            # Claude Code turns act on files, so a cached reply would skip real work.
+            cacheable = routed_provider != "claude_code" and prompt_cache.should_cache(msg_dicts)
+            if cacheable:
                 cached = await prompt_cache.get(model_name, msg_dicts)
                 if cached:
                     if db:
@@ -438,7 +452,7 @@ class Orchestrator:
                     )
 
                 # Cache the response (if appropriate)
-                if prompt_cache.should_cache(msg_dicts) and ai_content:
+                if cacheable and ai_content:
                     await prompt_cache.set(model_name, msg_dicts, ai_content)
 
                 # Record heartbeat for watchdog
