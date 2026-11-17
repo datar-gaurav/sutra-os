@@ -144,6 +144,12 @@ class Settings(BaseSettings):
     claude_code_timeout_sec: int = 900                  # per turn; worker caps it too
     claude_code_max_turns: int = 0                      # 0 = CLI default
 
+    # Codex — same idea on a ChatGPT subscription (provider "codex"). The
+    # worker runs `codex exec --json` with the host's `codex login`.
+    codex_sandbox_mode: str = "workspace-write"         # read-only | workspace-write
+    codex_reasoning_effort: str = ""                    # "" = Codex config default; low|medium|high…
+    codex_timeout_sec: int = 900                        # per turn; worker caps it too
+
     # Social Pulse — trending content research
     social_pulse_cron: str = "*/30 * * * *"  # every 30 min
     social_pulse_default_subreddits: str = "technology,programming,business,marketing,worldnews"

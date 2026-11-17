@@ -200,6 +200,15 @@ async def list_openai_models():
     return await llm_registry.fetch_openai_models()
 
 
+# ─── Codex (ChatGPT subscription via host Fleet worker) ──────────────────────
+
+@router.get("/codex/models")
+async def list_codex_models():
+    """Models the host's Codex login offers, plus "default" (Codex's own config)."""
+    from app.core.cli_agent_executor import fetch_codex_models
+    return await fetch_codex_models()
+
+
 # ─── NVIDIA NIM Discovery ──────────────────────────────────────────────────────
 
 @router.get("/nvidia_nim/models", response_model=list[GroqModel])

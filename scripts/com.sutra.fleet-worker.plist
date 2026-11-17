@@ -74,6 +74,17 @@
     <string>2</string>
     -->
 
+    <!-- Optional: Codex provider (purpose slot provider "codex").
+         Uses your ChatGPT subscription: run `codex login` and choose Sign in
+         with ChatGPT. Found on PATH or at ~/.local/bin/codex by default.
+    <key>CODEX_BIN</key>
+    <string>/Users/YOU/.local/bin/codex</string>
+    <key>CODEX_WORKSPACE_ROOT</key>
+    <string>/Users/YOU/agent_workspaces/codex</string>
+    <key>CODEX_MAX_CONCURRENT</key>
+    <string>2</string>
+    -->
+
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>

@@ -21,8 +21,14 @@ Per-job lifecycle (same as before):
   7. POST /status pr_created + pr_url, rmtree workspace.
 
 Endpoints:
-  POST /run        bearer-authed; kicks off one job (no-op if already busy)
-  GET  /health     no auth; returns {ok, busy, version}
+  POST /run          bearer-authed; kicks off one job (no-op if already busy)
+  POST /exec/claude  bearer-authed; one Claude Code turn on the user's Claude
+                     subscription, streamed back as NDJSON (purpose provider
+                     "claude_code")
+  POST /exec/codex   same for Codex on the user's ChatGPT subscription
+                     (purpose provider "codex")
+  GET  /models/codex bearer-authed; models the host's Codex login offers
+  GET  /health       no auth; returns {ok, busy, version, claude_ready, codex_ready}
 
 Required env (set in launchd plist or shell rc):
   SUTRA_URL                 e.g. http://localhost:8000
@@ -62,7 +68,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -644,51 +650,172 @@ def shakha_sync_loop() -> None:
         time.sleep(SHAKHA_SYNC_SECONDS)
 
 
-# ─── Claude Code exec (subscription-backed chat turns) ───────────────────────
+# ─── CLI agent exec (subscription-backed chat turns) ─────────────────────────
 #
-# Sutra agents whose purpose slot resolves to provider "claude_code" send each
-# chat turn here. We run the official `claude` CLI headless, logged in with the
-# user's Claude subscription (credentials stay in the macOS keychain / ~/.claude
-# on this host and never reach Docker), and relay its stream-json events back
-# as NDJSON. One working folder per agent, so files persist across turns.
+# Sutra agents whose purpose slot resolves to provider "claude_code" or "codex"
+# send each chat turn here. We run the official CLI headless, logged in with
+# the user's own subscription (Claude: macOS keychain / ~/.claude; Codex:
+# ~/.codex/auth.json). Those logins stay on this host and never reach Docker.
+# The CLI's JSON events are relayed back as NDJSON, framed by our own
+# sutra_start / sutra_end events. One working folder per agent and runner, so
+# files persist across turns.
 
-CLAUDE_BIN = os.path.expanduser(
-    os.environ.get("CLAUDE_BIN", "").strip()
-    or shutil.which("claude")
-    or "~/.local/bin/claude"
-)
-CLAUDE_WORKSPACE_ROOT = Path(os.path.expanduser(
-    os.environ.get("CLAUDE_WORKSPACE_ROOT", "").strip() or str(WORKSPACE_ROOT / "claude-code")
-))
-CLAUDE_MAX_CONCURRENT = int(os.environ.get("CLAUDE_MAX_CONCURRENT", "2"))
-CLAUDE_MAX_TIMEOUT_SEC = int(os.environ.get("CLAUDE_MAX_TIMEOUT_SEC", "1800"))
-_CLAUDE_ALLOW_BYPASS = os.environ.get("CLAUDE_ALLOW_BYPASS", "").strip() == "1"
-_claude_slots = threading.BoundedSemaphore(CLAUDE_MAX_CONCURRENT)
 _WORKDIR_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_CLAUDE_MODEL_RE = re.compile(r"^[A-Za-z0-9._\[\]-]{1,80}$")
+_MODEL_RE = re.compile(r"^[A-Za-z0-9._\[\]-]{1,80}$")
 _CLAUDE_TOOL_RE = re.compile(r"^[A-Za-z0-9_]+(\([^()\n]{0,200}\))?$")
 _FILE_SNAPSHOT_LIMIT = 5000
+EXEC_MAX_TIMEOUT_SEC = int(os.environ.get("CLI_MAX_TIMEOUT_SEC", os.environ.get("CLAUDE_MAX_TIMEOUT_SEC", "1800")))
+# Secrets that must never reach a CLI. API keys would also switch the CLI from
+# the subscription to pay-per-token API billing.
+_SCRUBBED_ENV = {
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY",
+    "GITHUB_TOKEN", "GH_TOKEN", "FLEET_WORKER_TOKEN", "SUTRA_URL",
+}
+
+
+def _find_bin(env_name: str, name: str) -> str:
+    return os.path.expanduser(
+        os.environ.get(env_name, "").strip() or shutil.which(name) or f"~/.local/bin/{name}"
+    )
+
+
+def _is_exe(path: str) -> bool:
+    return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _cli_env(bin_path: str) -> dict:
+    """Env for a CLI subprocess: real HOME/USER so it finds the login, no secrets."""
+    keep = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SHELL", "TERM", "CODEX_HOME")
+    env = {k: os.environ[k] for k in keep if k in os.environ and k not in _SCRUBBED_ENV}
+    env.setdefault("PATH", "/usr/bin:/bin:/usr/local/bin")
+    bin_dir = os.path.dirname(bin_path)
+    if bin_dir and bin_dir not in env["PATH"].split(":"):
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    return env
+
+
+class CliRunner:
+    """One subscription CLI: how to find it, check it and build its argv."""
+
+    name = ""
+
+    def __init__(self, bin_path: str, workspace_root: Path, max_concurrent: int):
+        self.bin = bin_path
+        self.workspace_root = workspace_root
+        self.max_concurrent = max_concurrent
+        self.slots = threading.BoundedSemaphore(max_concurrent)
+
+    def ready(self) -> bool:
+        return _is_exe(self.bin)
+
+    def env(self) -> dict:
+        return _cli_env(self.bin)
+
+    def build(self, req: dict, workdir: Path) -> tuple[list[str], str]:
+        """Validate the request; return (argv, stdin text). Raises ValueError."""
+        raise NotImplementedError
+
+
+class ClaudeRunner(CliRunner):
+    name = "claude"
+    allow_bypass = os.environ.get("CLAUDE_ALLOW_BYPASS", "").strip() == "1"
+
+    def env(self) -> dict:
+        env = super().env()
+        env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        return env
+
+    def build(self, req: dict, workdir: Path) -> tuple[list[str], str]:
+        model = str(req.get("model") or "sonnet").strip()
+        if not _MODEL_RE.match(model):
+            raise ValueError(f"invalid model {model!r}")
+        mode = str(req.get("permission_mode") or "acceptEdits").strip()
+        allowed = {"default", "acceptEdits", "plan"} | ({"bypassPermissions"} if self.allow_bypass else set())
+        if mode not in allowed:
+            raise ValueError(f"permission_mode {mode!r} not allowed (allowed: {sorted(allowed)})")
+        cmd = [
+            self.bin, "-p",
+            "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+            "--model", model,
+            "--permission-mode", mode,
+        ]
+        tools = [str(t).strip() for t in (req.get("allowed_tools") or []) if str(t).strip()]
+        for t in tools:
+            if not _CLAUDE_TOOL_RE.match(t):
+                raise ValueError(f"invalid allowed tool {t!r}")
+        if tools:
+            cmd += ["--allowedTools", ",".join(tools)]
+        if req.get("max_turns"):
+            cmd += ["--max-turns", str(max(1, min(int(req["max_turns"]), 200)))]
+        system_prompt = str(req.get("system_prompt") or "").strip()
+        if system_prompt:
+            cmd += ["--append-system-prompt", system_prompt]
+        return cmd, str(req.get("prompt") or "")
+
+
+class CodexRunner(CliRunner):
+    name = "codex"
+    allow_full_access = os.environ.get("CODEX_ALLOW_FULL_ACCESS", "").strip() == "1"
+
+    def build(self, req: dict, workdir: Path) -> tuple[list[str], str]:
+        sandbox = str(req.get("sandbox") or "workspace-write").strip()
+        allowed = {"read-only", "workspace-write"} | ({"danger-full-access"} if self.allow_full_access else set())
+        if sandbox not in allowed:
+            raise ValueError(f"sandbox {sandbox!r} not allowed (allowed: {sorted(allowed)})")
+        cmd = [
+            self.bin, "exec", "--json", "--color", "never", "--skip-git-repo-check", "--ephemeral",
+            "-s", sandbox, "-C", str(workdir),
+        ]
+        model = str(req.get("model") or "default").strip()
+        if model != "default":
+            if not _MODEL_RE.match(model):
+                raise ValueError(f"invalid model {model!r}")
+            cmd += ["-m", model]
+        effort = str(req.get("reasoning_effort") or "").strip()
+        if effort:
+            if not re.match(r"^[a-z]{1,16}$", effort):
+                raise ValueError(f"invalid reasoning_effort {effort!r}")
+            cmd += ["-c", f'model_reasoning_effort="{effort}"']
+        cmd.append("-")  # read the prompt from stdin
+        # `codex exec` has no system-prompt flag: put the agent's instructions first.
+        prompt = str(req.get("prompt") or "")
+        system_prompt = str(req.get("system_prompt") or "").strip()
+        if system_prompt:
+            prompt = f"<agent_instructions>\n{system_prompt}\n</agent_instructions>\n\n{prompt}"
+        return cmd, prompt
+
+    def models(self) -> list[dict]:
+        """Models this Codex login offers, from the CLI's own cache."""
+        home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        try:
+            data = json.loads((home / "models_cache.json").read_text())
+        except (OSError, ValueError):
+            return []
+        out = []
+        for m in data.get("models") or []:
+            if isinstance(m, dict) and m.get("slug") and m.get("visibility", "list") == "list":
+                out.append({"id": m["slug"], "name": m.get("display_name") or m["slug"],
+                            "description": m.get("description", "")})
+        return out
+
+
+_WS_DEFAULT = WORKSPACE_ROOT
+RUNNERS_EXEC: dict[str, CliRunner] = {
+    "claude": ClaudeRunner(
+        _find_bin("CLAUDE_BIN", "claude"),
+        Path(os.path.expanduser(os.environ.get("CLAUDE_WORKSPACE_ROOT", "").strip() or str(_WS_DEFAULT / "claude-code"))),
+        int(os.environ.get("CLAUDE_MAX_CONCURRENT", "2")),
+    ),
+    "codex": CodexRunner(
+        _find_bin("CODEX_BIN", "codex"),
+        Path(os.path.expanduser(os.environ.get("CODEX_WORKSPACE_ROOT", "").strip() or str(_WS_DEFAULT / "codex"))),
+        int(os.environ.get("CODEX_MAX_CONCURRENT", "2")),
+    ),
+}
 
 
 def claude_ready() -> bool:
-    return bool(CLAUDE_BIN) and os.path.isfile(CLAUDE_BIN) and os.access(CLAUDE_BIN, os.X_OK)
-
-
-def _claude_env() -> dict:
-    """Env for the claude subprocess.
-
-    Keeps the real HOME/USER so the CLI finds the subscription login, and drops
-    everything secret. ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are removed on
-    purpose: if present, the CLI would bill the API instead of the subscription.
-    """
-    keep = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SHELL", "TERM")
-    env = {k: os.environ[k] for k in keep if k in os.environ}
-    env.setdefault("PATH", "/usr/bin:/bin:/usr/local/bin")
-    bin_dir = os.path.dirname(CLAUDE_BIN)
-    if bin_dir and bin_dir not in env["PATH"].split(":"):
-        env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-    return env
+    return RUNNERS_EXEC["claude"].ready()
 
 
 def _snapshot_files(root: Path) -> dict[str, float]:
@@ -707,67 +834,35 @@ def _snapshot_files(root: Path) -> dict[str, float]:
     return out
 
 
-def build_claude_cmd(req: dict) -> list[str]:
-    """Validate an /exec request and return the claude argv. Raises ValueError."""
-    model = str(req.get("model") or "sonnet").strip()
-    if not _CLAUDE_MODEL_RE.match(model):
-        raise ValueError(f"invalid model {model!r}")
-    mode = str(req.get("permission_mode") or "acceptEdits").strip()
-    allowed_modes = {"default", "acceptEdits", "plan"} | ({"bypassPermissions"} if _CLAUDE_ALLOW_BYPASS else set())
-    if mode not in allowed_modes:
-        raise ValueError(f"permission_mode {mode!r} not allowed (allowed: {sorted(allowed_modes)})")
-
-    cmd = [
-        CLAUDE_BIN, "-p",
-        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-        "--model", model,
-        "--permission-mode", mode,
-    ]
-    tools = [t.strip() for t in (req.get("allowed_tools") or []) if str(t).strip()]
-    for t in tools:
-        if not _CLAUDE_TOOL_RE.match(t):
-            raise ValueError(f"invalid allowed tool {t!r}")
-    if tools:
-        cmd += ["--allowedTools", ",".join(tools)]
-    max_turns = req.get("max_turns")
-    if max_turns:
-        cmd += ["--max-turns", str(max(1, min(int(max_turns), 200)))]
-    system_prompt = str(req.get("system_prompt") or "").strip()
-    if system_prompt:
-        cmd += ["--append-system-prompt", system_prompt]
-    return cmd
-
-
-def handle_claude_exec(handler: "Handler", req: dict) -> None:
-    """Run one Claude Code turn and stream NDJSON events back to the caller."""
-    prompt = str(req.get("prompt") or "")
+def handle_cli_exec(handler: "Handler", req: dict, runner: CliRunner) -> None:
+    """Run one CLI agent turn and stream NDJSON events back to the caller."""
     key = str(req.get("workdir_key") or "")
-    if not prompt.strip():
+    if not str(req.get("prompt") or "").strip():
         handler._json(400, {"error": "prompt is required"})
         return
     if not _WORKDIR_KEY_RE.match(key):
         handler._json(400, {"error": "workdir_key must match [A-Za-z0-9_-]{1,64}"})
         return
-    if not claude_ready():
-        handler._json(503, {"error": f"claude CLI not available at {CLAUDE_BIN} (not available)"})
+    if not runner.ready():
+        handler._json(503, {"error": f"{runner.name} CLI not available at {runner.bin} (not available)"})
         return
+    workdir = runner.workspace_root / key
     try:
-        cmd = build_claude_cmd(req)
+        cmd, stdin_text = runner.build(req, workdir)
     except (ValueError, TypeError) as e:
         handler._json(400, {"error": str(e)})
         return
-    if not _claude_slots.acquire(blocking=False):
-        handler._json(429, {"error": f"Claude Code at capacity ({CLAUDE_MAX_CONCURRENT} concurrent runs)"})
+    if not runner.slots.acquire(blocking=False):
+        handler._json(429, {"error": f"{runner.name} at capacity ({runner.max_concurrent} concurrent runs)"})
         return
 
     try:
-        timeout = max(30, min(int(req.get("timeout_sec") or 900), CLAUDE_MAX_TIMEOUT_SEC))
-        workdir = CLAUDE_WORKSPACE_ROOT / key
+        timeout = max(30, min(int(req.get("timeout_sec") or 900), EXEC_MAX_TIMEOUT_SEC))
         workdir.mkdir(parents=True, exist_ok=True)
         before = _snapshot_files(workdir)
 
         proc = subprocess.Popen(
-            cmd, cwd=str(workdir), env=_claude_env(),
+            cmd, cwd=str(workdir), env=runner.env(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
         )
@@ -801,9 +896,9 @@ def handle_claude_exec(handler: "Handler", req: dict) -> None:
 
         try:
             assert proc.stdin is not None and proc.stdout is not None
-            proc.stdin.write(prompt)
+            proc.stdin.write(stdin_text)
             proc.stdin.close()
-            emit({"type": "sutra_start", "workdir": str(workdir), "model": req.get("model")})
+            emit({"type": "sutra_start", "runner": runner.name, "workdir": str(workdir), "model": req.get("model")})
             for line in proc.stdout:
                 line = line.strip()
                 if line:
@@ -814,6 +909,7 @@ def handle_claude_exec(handler: "Handler", req: dict) -> None:
             changed = sorted(p for p, m in after.items() if before.get(p) != m)
             emit({
                 "type": "sutra_end",
+                "runner": runner.name,
                 "exit_code": code,
                 "timed_out": timed_out.is_set(),
                 "timeout_sec": timeout,
@@ -822,14 +918,14 @@ def handle_claude_exec(handler: "Handler", req: dict) -> None:
                 "stderr_tail": "\n".join(stderr_tail[-15:]),
             })
         except (BrokenPipeError, ConnectionResetError):
-            sys.stderr.write(f"[fleet] claude exec ({key}): caller disconnected, stopping run\n")
+            sys.stderr.write(f"[fleet] {runner.name} exec ({key}): caller disconnected, stopping run\n")
             proc.kill()
         finally:
             timer.cancel()
             if proc.poll() is None:
                 proc.kill()
     finally:
-        _claude_slots.release()
+        runner.slots.release()
 
 
 # ─── HTTP server ─────────────────────────────────────────────────────────────
@@ -878,12 +974,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "gemini_home": str(GEMINI_HOME) if GEMINI_HOME else None,
                 "shakha_ready": shakha_ready() if SHAKHA_BIN else None,
                 "claude_ready": claude_ready(),
+                "codex_ready": RUNNERS_EXEC["codex"].ready(),
             })
+            return
+        if self.path == "/models/codex":
+            if not self._auth_ok():
+                self._json(403, {"error": "invalid bearer"})
+                return
+            self._json(200, {"models": RUNNERS_EXEC["codex"].models()})
             return
         self._json(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path == "/exec/claude":
+        if self.path in ("/exec/claude", "/exec/codex"):
             if not self._auth_ok():
                 self._json(403, {"error": "invalid bearer"})
                 return
@@ -897,7 +1000,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError) as e:
                 self._json(400, {"error": f"bad request: {e}"})
                 return
-            handle_claude_exec(self, req)
+            handle_cli_exec(self, req, RUNNERS_EXEC[self.path.rsplit("/", 1)[1]])
             return
         if self.path != "/run":
             self._json(404, {"error": "not found"})
