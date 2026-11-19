@@ -89,7 +89,9 @@ class MCPManager:
                 # Use official Streamable HTTP client
                 # We need a client with the right headers
                 async with httpx.AsyncClient(headers=server.headers) as http_client:
-                    async with streamable_http_client(url=server.url, http_client=http_client) as (read, write, _):
+                    # mcp 1.x yields (read, write, get_session_id); 2.x yields (read, write)
+                    async with streamable_http_client(url=server.url, http_client=http_client) as streams:
+                        read, write = streams[0], streams[1]
                         async with ClientSession(read, write) as session:
                             await session.initialize()
                             self._sessions[server.id] = session
