@@ -91,3 +91,95 @@ async def test_streamable_http_session_discovers_tools(yielded, schema_attr):
 
     assert seen == {"url": "http://host.docker.internal:8100/mcp", "auth": "Bearer t0ken"}
     assert server.id not in manager._tools
+
+
+# ─── Start / stop lifecycle (no backend restart needed) ─────────────────────
+
+
+def _row(**kw):
+    base = dict(
+        id="srv-2",
+        name="Engram",
+        transport_type="streamable_http",
+        command=None,
+        args=None,
+        url="http://host.docker.internal:8100/mcp",
+        env_vars=None,
+        headers={"Authorization": "Bearer t0ken"},
+        is_active=False,
+        status="stopped",
+        tools=[],
+    )
+    return SimpleNamespace(**{**base, **kw})
+
+
+class _FakeDB:
+    def __init__(self, row):
+        self.row = row
+        self.commits = 0
+
+    async def get(self, model, server_id):
+        return self.row if server_id == self.row.id else None
+
+    async def commit(self):
+        self.commits += 1
+
+    async def refresh(self, obj):
+        pass
+
+    async def delete(self, obj):
+        self.row = SimpleNamespace(id=None)
+
+
+def _patched_manager(fail=False):
+    manager = mm.MCPManager()
+    starts = []
+
+    async def fake_session(server):
+        starts.append(server.id)
+        if fail:
+            raise ConnectionError("refused")
+        manager._sessions[server.id] = object()
+        manager._tools[server.id] = [
+            {"name": "recall", "description": "Recall", "input_schema": {}}
+        ]
+        try:
+            while server.id in manager._sessions:
+                await asyncio.sleep(0.01)
+        finally:
+            manager._sessions.pop(server.id, None)
+            manager._tools.pop(server.id, None)
+
+    manager._run_sse_session = fake_session
+    return manager, starts
+
+
+async def test_start_connects_now_and_stop_disconnects():
+    from app.api.routes import mcp_servers as routes
+
+    manager, starts = _patched_manager()
+    db = _FakeDB(_row())
+    with patch.object(routes, "mcp_manager", manager):
+        out = await routes.start_mcp_server("srv-2", db)
+        assert out["status"] == "running"
+        assert db.row.is_active and db.row.status == "running"
+        assert db.row.tools == [{"name": "recall", "description": "Recall"}]
+        assert manager.get_all_mcp_tools_metadata()[0]["id"] == "mcp_srv-2_recall"
+
+        await routes.start_mcp_server("srv-2", db)  # second Start reuses the session
+        assert starts == ["srv-2"]
+
+        out = await routes.stop_mcp_server("srv-2", db)
+        assert out["status"] == "stopped" and not db.row.is_active
+        assert manager.get_all_mcp_tools_metadata() == []
+        assert "srv-2" not in manager._tasks
+
+
+async def test_start_reports_connection_failure():
+    from app.api.routes import mcp_servers as routes
+
+    manager, _ = _patched_manager(fail=True)
+    db = _FakeDB(_row())
+    with patch.object(routes, "mcp_manager", manager):
+        out = await routes.start_mcp_server("srv-2", db)
+    assert out["status"] == "error" and db.row.status == "error" and db.row.tools == []
