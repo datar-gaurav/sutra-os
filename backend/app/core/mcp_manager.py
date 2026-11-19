@@ -18,6 +18,14 @@ from app.api.schemas import ToolInfo
 
 logger = logging.getLogger(__name__)
 
+
+def _input_schema(tool: Any) -> Dict[str, Any]:
+    """A tool's JSON schema; mcp 2.x renamed `inputSchema` to `input_schema`."""
+    schema = getattr(tool, "input_schema", None)
+    if schema is None:
+        schema = getattr(tool, "inputSchema", None)
+    return schema or {}
+
 class MCPManager:
     """Manages connections to MCP servers and tool discovery."""
 
@@ -70,7 +78,7 @@ class MCPManager:
                         {
                             "name": t.name,
                             "description": t.description,
-                            "input_schema": t.inputSchema
+                            "input_schema": _input_schema(t)
                         } for t in tools_result.tools
                     ]
                     logger.info(f"Connected to MCP stdio server {server.name}, found {len(self._tools[server.id])} tools.")
@@ -89,7 +97,9 @@ class MCPManager:
                 # Use official Streamable HTTP client
                 # We need a client with the right headers
                 async with httpx.AsyncClient(headers=server.headers) as http_client:
-                    async with streamable_http_client(url=server.url, http_client=http_client) as (read, write, _):
+                    # mcp 1.x yields (read, write, get_session_id); 2.x yields (read, write)
+                    async with streamable_http_client(url=server.url, http_client=http_client) as streams:
+                        read, write = streams[0], streams[1]
                         async with ClientSession(read, write) as session:
                             await session.initialize()
                             self._sessions[server.id] = session
@@ -98,7 +108,7 @@ class MCPManager:
                                 {
                                     "name": t.name,
                                     "description": t.description,
-                                    "input_schema": t.inputSchema
+                                    "input_schema": _input_schema(t)
                                 } for t in tools_result.tools
                             ]
                             logger.info(f"Connected to MCP Streamable HTTP server {server.name}, found {len(self._tools[server.id])} tools.")
@@ -115,7 +125,7 @@ class MCPManager:
                             {
                                 "name": t.name,
                                 "description": t.description,
-                                "input_schema": t.inputSchema
+                                "input_schema": _input_schema(t)
                             } for t in tools_result.tools
                         ]
                         logger.info(f"Connected to MCP SSE server {server.name}, found {len(self._tools[server.id])} tools.")

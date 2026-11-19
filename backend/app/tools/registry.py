@@ -1103,7 +1103,7 @@ def get_tools_by_ids(tool_ids: list[str], agent_id: str | None = None) -> list[B
             continue  # already handled above
         if tid in _TOOL_MAP:
             tools.append(_TOOL_MAP[tid])
-        elif tid.startswith("mcp__"):
+        elif tid.startswith("mcp_"):  # catalog ids are mcp_<server[:8]>_<tool>
             mcp_tool = mcp_manager.get_langchain_tool(tid)
             if mcp_tool:
                 tools.append(mcp_tool)
