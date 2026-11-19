@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Type, Union
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -33,6 +34,7 @@ class MCPManager:
         self._sessions: Dict[str, ClientSession] = {}
         self._tools: Dict[str, List[Dict[str, Any]]] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
+        self._tasks: Dict[str, asyncio.Task] = {}
 
     def _get_lock(self, server_id: str) -> asyncio.Lock:
         if server_id not in self._locks:
@@ -40,11 +42,21 @@ class MCPManager:
         return self._locks[server_id]
 
     async def connect_server(self, server: MCPServer) -> bool:
-        """Establish a connection to an MCP server and fetch its tools."""
+        """Start a background session for an MCP server (no-op if one is already running).
+
+        The session runs in a task; use wait_connected() to wait for tool discovery.
+        """
         async with self._get_lock(server.id):
-            if server.id in self._sessions:
+            task = self._tasks.get(server.id)
+            if server.id in self._sessions or (task and not task.done()):
                 return True
 
+            # Snapshot the row: the task outlives the request's DB session.
+            server = SimpleNamespace(
+                id=server.id, name=server.name, transport_type=server.transport_type,
+                command=server.command, args=server.args, url=server.url,
+                env_vars=server.env_vars, headers=server.headers,
+            )
             try:
                 if server.transport_type == "stdio":
                     params = StdioServerParameters(
@@ -52,10 +64,10 @@ class MCPManager:
                         args=server.args or [],
                         env=server.env_vars or {}
                     )
-                    asyncio.create_task(self._run_stdio_session(server, params))
+                    self._tasks[server.id] = asyncio.create_task(self._run_stdio_session(server, params))
                 
                 elif server.transport_type in ["sse", "streamable_http", "streamable-http"]:
-                    asyncio.create_task(self._run_sse_session(server))
+                    self._tasks[server.id] = asyncio.create_task(self._run_sse_session(server))
                 
                 else:
                     logger.error(f"Unsupported MCP transport: {server.transport_type}")
@@ -136,6 +148,42 @@ class MCPManager:
         finally:
             self._sessions.pop(server.id, None)
             self._tools.pop(server.id, None)
+
+    async def wait_connected(self, server_id: str, timeout: float = 10.0) -> Optional[List[Dict[str, Any]]]:
+        """Wait for a started session to discover its tools.
+
+        Returns the tool list once connected, or None if the session ended
+        (connection failed) or `timeout` passed first.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if server_id in self._tools:
+                return self._tools[server_id]
+            task = self._tasks.get(server_id)
+            if task is None or task.done():
+                return None
+            await asyncio.sleep(0.1)
+        return None
+
+    def is_connecting(self, server_id: str) -> bool:
+        """True while a started session hasn't connected yet and hasn't failed."""
+        task = self._tasks.get(server_id)
+        return bool(task and not task.done()) and server_id not in self._tools
+
+    async def disconnect_server(self, server_id: str, timeout: float = 5.0) -> None:
+        """End a server's session (if any) and drop its tools."""
+        async with self._get_lock(server_id):
+            self._sessions.pop(server_id, None)  # ends the session's keep-alive loop
+            task = self._tasks.pop(server_id, None)
+            if task and not task.done():
+                try:
+                    await asyncio.wait_for(task, timeout)
+                except asyncio.TimeoutError:
+                    task.cancel()
+                except Exception:
+                    pass
+            self._tools.pop(server_id, None)
 
     async def call_tool(self, server_id: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
         session = self._sessions.get(server_id)
