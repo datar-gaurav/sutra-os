@@ -140,6 +140,7 @@ export default function MCPServersPage() {
     const [formIcon, setFormIcon] = useState("🔌");
     const [formTags, setFormTags] = useState("");
     const [formEnvVars, setFormEnvVars] = useState<{ key: string; value: string }[]>([]);
+    const [formHeaders, setFormHeaders] = useState<{ key: string; value: string }[]>([]);
     const [saving, setSaving] = useState(false);
 
     useEffect(() => {
@@ -166,6 +167,7 @@ export default function MCPServersPage() {
         setFormIcon("🔌");
         setFormTags("");
         setFormEnvVars([]);
+        setFormHeaders([]);
     }
 
     function loadPreset(preset: typeof PRESET_SERVERS[0]) {
@@ -195,6 +197,12 @@ export default function MCPServersPage() {
             formEnvVars.forEach(ev => {
                 if (ev.key.trim()) envObj[ev.key.trim()] = ev.value;
             });
+            const headersObj: Record<string, string> = {};
+            if (formTransport !== "stdio") {
+                formHeaders.forEach(h => {
+                    if (h.key.trim()) headersObj[h.key.trim()] = h.value;
+                });
+            }
 
             await mcpServersApi.create({
                 name: formName.trim(),
@@ -205,6 +213,7 @@ export default function MCPServersPage() {
                 icon: formIcon || undefined,
                 tags: formTags.split(",").map(t => t.trim()).filter(Boolean),
                 env_vars: Object.keys(envObj).length > 0 ? envObj : undefined,
+                headers: Object.keys(headersObj).length > 0 ? headersObj : undefined,
             });
 
             resetForm();
@@ -458,6 +467,64 @@ export default function MCPServersPage() {
                         </div>
                     )}
 
+                    {/* Request Headers (HTTP transports only, e.g. Authorization: Bearer <token>) */}
+                    {formTransport !== "stdio" && (
+                        <div>
+                            <div className="flex items-center justify-between mb-2">
+                                <label className="text-xs font-medium text-stone-600">Request Headers</label>
+                                <button
+                                    type="button"
+                                    onClick={() => setFormHeaders([...formHeaders, { key: "", value: "" }])}
+                                    className="text-xs text-violet-600 hover:text-violet-700 font-medium flex items-center gap-1"
+                                >
+                                    <Plus className="w-3 h-3" /> Add Header
+                                </button>
+                            </div>
+                            {formHeaders.length > 0 ? (
+                                <div className="space-y-2">
+                                    {formHeaders.map((h, idx) => (
+                                        <div key={idx} className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                value={h.key}
+                                                onChange={(e) => {
+                                                    const updated = [...formHeaders];
+                                                    updated[idx] = { ...updated[idx], key: e.target.value };
+                                                    setFormHeaders(updated);
+                                                }}
+                                                placeholder="Authorization"
+                                                aria-label="Header name"
+                                                className="w-48 bg-stone-50 border border-stone-200 rounded-lg px-3 py-1.5 text-sm font-mono text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-violet-500/10 focus:border-violet-500"
+                                            />
+                                            <input
+                                                type="password"
+                                                value={h.value}
+                                                onChange={(e) => {
+                                                    const updated = [...formHeaders];
+                                                    updated[idx] = { ...updated[idx], value: e.target.value };
+                                                    setFormHeaders(updated);
+                                                }}
+                                                placeholder="Bearer <token>"
+                                                aria-label="Header value"
+                                                className="flex-1 bg-stone-50 border border-stone-200 rounded-lg px-3 py-1.5 text-sm font-mono text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-violet-500/10 focus:border-violet-500"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setFormHeaders(formHeaders.filter((_, i) => i !== idx))}
+                                                aria-label="Remove header"
+                                                className="text-stone-400 hover:text-red-500 p-1"
+                                            >
+                                                <X className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <p className="text-xs text-stone-400">No headers. Add one for servers that need a token, e.g. Authorization: Bearer &lt;token&gt;.</p>
+                            )}
+                        </div>
+                    )}
+
                     {/* Environment Variables */}
                     <div>
                         <div className="flex items-center justify-between mb-2">
@@ -694,6 +761,20 @@ export default function MCPServersPage() {
                                                     {Object.keys(server.env_vars).map(key => (
                                                         <span key={key} className="px-2 py-1 rounded-md bg-white border border-stone-200 text-xs font-mono text-stone-600">
                                                             {key} = •••
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Request Headers (names only; values are secrets) */}
+                                        {server.headers && Object.keys(server.headers).length > 0 && (
+                                            <div>
+                                                <h4 className="text-[10px] font-bold text-stone-500 uppercase tracking-widest mb-2">Request Headers</h4>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {Object.keys(server.headers).map(key => (
+                                                        <span key={key} className="px-2 py-1 rounded-md bg-white border border-stone-200 text-xs font-mono text-stone-600">
+                                                            {key}: •••
                                                         </span>
                                                     ))}
                                                 </div>

@@ -736,6 +736,7 @@ export interface MCPServer {
     args: string[] | null;
     url: string | null;
     env_vars: Record<string, string> | null;
+    headers: Record<string, string> | null;
     is_active: boolean;
     status: "stopped" | "starting" | "running" | "error";
     tools: any[] | null;
